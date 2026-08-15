@@ -9,8 +9,8 @@
                 <section class="settings-section settings-section--first">
                     <div class="settings-section-head">
                         <span class="settings-section-kicker">Access</span>
-                        <h4>访问与 API</h4>
-                        <p>统一管理登录鉴权、临时邮箱服务凭证以及对外接口访问密钥。</p>
+                        <h4>登录安全</h4>
+                        <p>管理当前系统的登录密码。</p>
                     </div>
                     <div class="settings-panel">
                         <div class="form-group">
@@ -18,91 +18,32 @@
                             <input type="password" class="form-input" id="settingsPassword" placeholder="输入新密码（留空则不修改）">
                             <div class="form-hint">用于登录当前系统。</div>
                         </div>
-                        <div class="form-group">
-                            <label class="form-label">GPTMail API Key</label>
-                            <input type="text" class="form-input" id="settingsApiKey" placeholder="输入 GPTMail API Key">
-                            <div class="form-hint">用于临时邮箱功能，可从 <a class="inline-link" href="https://mail.chatgpt.org.uk/api" target="_blank">gptmail.io</a> 获取。</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">对外 API Key</label>
-                            <div class="settings-inline-action">
-                                <input type="text" class="form-input" id="settingsExternalApiKey" placeholder="输入或生成对外 API Key">
-                                <button class="btn btn-secondary" onclick="generateExternalApiKey()">🔑 随机生成</button>
-                            </div>
-                            <div class="form-hint">用于对外 API 认证，调用时在 Header 中传递 <code>X-API-Key</code>。</div>
-                            <div class="settings-note"><code>GET /api/external/emails?email=xxx&folder=inbox</code></div>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="settings-section">
-                    <div class="settings-section-head">
-                        <span class="settings-section-kicker">Temp Mail</span>
-                        <h4>DuckMail 临时邮箱设置</h4>
-                        <p>用于接入自部署或私有能力的 DuckMail 服务。</p>
-                    </div>
-                    <div class="settings-panel">
-                        <div class="form-group">
-                            <label class="form-label">DuckMail API 地址</label>
-                            <input type="text" class="form-input" id="settingsDuckmailBaseUrl" placeholder="https://api.duckmail.sbs">
-                            <div class="form-hint">自部署 DuckMail 实例的 API 地址，留空时默认使用官方地址。</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">DuckMail API Key（可选）</label>
-                            <input type="text" class="form-input" id="settingsDuckmailApiKey" placeholder="dk_ 前缀的 API Key">
-                            <div class="form-hint">用于获取私有域名，可从 <a class="inline-link" href="https://domain.duckmail.sbs" target="_blank">domain.duckmail.sbs</a> 获取。</div>
-                        </div>
-                    </div>
-                </section>
-
-                <section class="settings-section">
-                    <div class="settings-section-head">
-                        <span class="settings-section-kicker">Cloudflare</span>
-                        <h4>Cloudflare 临时邮箱设置</h4>
-                        <p>配置自建 Cloudflare Temp Email 实例的连接信息与管理凭证。</p>
-                    </div>
-                    <div class="settings-panel">
-                        <div class="form-group">
-                            <label class="form-label">Worker 域名</label>
-                            <input type="text" class="form-input" id="settingsCloudflareWorkerDomain" placeholder="your-worker.example.workers.dev">
-                            <div class="form-hint">只填写域名部分，不带 <code>https://</code>。</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">邮箱域名列表</label>
-                            <input type="text" class="form-input" id="settingsCloudflareEmailDomains" placeholder="mail1.example.com, mail2.example.com">
-                            <div class="form-hint">多个域名使用英文逗号分隔。</div>
-                        </div>
-                        <div class="form-group">
-                            <label class="form-label">管理员密码</label>
-                            <input type="password" class="form-input" id="settingsCloudflareAdminPassword" placeholder="对应 Cloudflare Temp Email 的 ADMIN_PASSWORD">
-                            <div class="form-hint">用于调用 <code>/admin/new_address</code> 等管理接口。</div>
-                        </div>
                     </div>
                 </section>
 
                 <section class="settings-section">
                     <div class="settings-section-head">
                         <span class="settings-section-kicker">Scheduler</span>
-                        <h4>Token 刷新设置</h4>
-                        <p>控制定时刷新任务的启停、执行策略与邮箱间请求节奏。</p>
+                        <h4>定时权限测试</h4>
+                        <p>控制号池定时测活的启停、执行策略与账号间请求节奏。</p>
                     </div>
                     <div class="settings-panel">
                         <div class="form-group">
                             <label class="settings-toggle">
                                 <input type="checkbox" id="enableScheduledRefresh" checked>
-                                <span class="form-label">启用定时刷新</span>
+                                <span class="form-label">启用定时测活</span>
                             </label>
-                            <div class="form-hint">关闭后将不会自动执行定时刷新任务。</div>
+                            <div class="form-hint">关闭后将不会自动执行账号权限测试。</div>
                         </div>
 
                         <div class="form-group">
-                            <label class="form-label">刷新策略</label>
+                            <label class="form-label">测活策略</label>
                             <div class="settings-choice-row">
                                 <label class="settings-choice-card">
                                     <input type="radio" name="refreshStrategy" value="days" checked onchange="toggleRefreshStrategy()">
                                     <span class="settings-choice-card__content">
                                         <span class="settings-choice-card__title">按天数</span>
-                                        <span class="settings-choice-card__meta">适合稳定周期刷新，例如每 30 天自动刷新一次。</span>
+                                        <span class="settings-choice-card__meta">适合稳定周期测活，例如每 30 天自动测试一次。</span>
                                     </span>
                                 </label>
                                 <label class="settings-choice-card">
@@ -117,7 +58,7 @@
 
                         <div id="daysStrategyContainer" class="settings-subpanel">
                             <div class="form-group">
-                                <label class="form-label">定时刷新周期</label>
+                                <label class="form-label">定时测活周期</label>
                                 <div class="input-inline">
                                     <input type="number" class="form-input" id="refreshIntervalDays" min="1" max="90" value="30" placeholder="30">
                                     <span>天</span>
@@ -335,123 +276,6 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="hideSettingsModal()">取消</button>
                 <button class="btn btn-primary" onclick="saveSettings()">保存设置</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Token 刷新管理模态框 -->
-    <div class="modal" id="refreshModal" onclick="if(event.target === this) hideRefreshModal()">
-        <div class="modal-content" style="width: 800px; max-width: 90vw;">
-            <div class="modal-header">
-                <h3>🔄 Token 刷新管理</h3>
-                <button class="modal-close" onclick="hideRefreshModal()">&times;</button>
-            </div>
-            <div class="modal-body">
-                <!-- 刷新统计 -->
-                <div
-                    style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                    <div
-                        style="font-size: 15px; font-weight: 600; margin-bottom: 16px; color: #333; display: flex; align-items: center; gap: 8px;">
-                        <span>📊</span>
-                        <span>刷新统计</span>
-                    </div>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px;">
-                        <div
-                            style="background-color: white; padding: 14px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-                            <div
-                                style="font-size: 12px; color: #666; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
-                                <span>🕐</span>
-                                <span>上次刷新</span>
-                            </div>
-                            <div style="font-size: 13px; font-weight: 600; color: #333;" id="lastRefreshTime">-</div>
-                        </div>
-                        <div
-                            style="background-color: white; padding: 14px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-                            <div
-                                style="font-size: 12px; color: #666; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
-                                <span>📝</span>
-                                <span>总邮箱数</span>
-                            </div>
-                            <div style="font-size: 18px; font-weight: 700; color: #333;" id="totalRefreshCount">0</div>
-                        </div>
-                        <div
-                            style="background-color: white; padding: 14px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-                            <div
-                                style="font-size: 12px; color: #666; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
-                                <span>✅</span>
-                                <span>成功邮箱</span>
-                            </div>
-                            <div style="font-size: 18px; font-weight: 700; color: #28a745;" id="successRefreshCount">0
-                            </div>
-                        </div>
-                        <div
-                            style="background-color: white; padding: 14px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-                            <div
-                                style="font-size: 12px; color: #666; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
-                                <span>❌</span>
-                                <span>失败邮箱</span>
-                            </div>
-                            <div style="font-size: 18px; font-weight: 700; color: #dc3545;" id="failedRefreshCount">0
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 操作按钮 -->
-                <div
-                    style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 16px;">
-                    <button class="btn btn-primary" onclick="refreshAllAccounts()" id="refreshAllBtn">
-                        🔄 全量刷新
-                    </button>
-                    <button class="btn btn-warning" onclick="retryFailedAccounts()" id="retryFailedBtn">
-                        🔁 重试失败
-                    </button>
-                    <button class="btn btn-secondary" onclick="loadFailedLogs()">
-                        ❌ 失败邮箱
-                    </button>
-                    <button class="btn btn-secondary" onclick="loadRefreshLogs()">
-                        📋 刷新历史
-                    </button>
-                </div>
-
-                <!-- 刷新进度 -->
-                <div id="refreshProgress"
-                    style="display: none; background-color: #e3f2fd; padding: 16px; border-radius: 6px; margin-bottom: 16px; border-left: 4px solid #2196f3;">
-                    <div style="font-size: 14px; font-weight: 600; margin-bottom: 12px; color: #1976d2;">正在刷新...</div>
-                    <div style="font-size: 13px; line-height: 1.8;" id="refreshProgressText">请稍候</div>
-                </div>
-
-                <!-- 失败邮箱列表 -->
-                <div id="failedListContainer" style="display: none;">
-                    <div
-                        style="font-size: 14px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
-                        <span>当前失败状态的邮箱</span>
-                        <button class="btn btn-sm btn-secondary" onclick="hideFailedList()">隐藏</button>
-                    </div>
-                    <div id="failedList"
-                        style="max-height: 300px; overflow-y: auto; border: 1px solid #e5e5e5; border-radius: 6px;">
-                        <!-- 失败列表将通过 JS 动态加载 -->
-                    </div>
-                </div>
-
-                <!-- 刷新历史 -->
-                <div id="refreshLogsContainer" style="display: none;">
-                    <div
-                        style="font-size: 14px; font-weight: 600; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; padding: 10px; background-color: #f8f9fa; border-radius: 6px;">
-                        <span style="display: flex; align-items: center; gap: 6px;">
-                            <span>📋</span>
-                            <span>刷新历史</span>
-                        </span>
-                        <button class="btn btn-sm btn-secondary" onclick="hideRefreshLogs()">隐藏</button>
-                    </div>
-                    <div id="refreshLogsList"
-                        style="max-height: 400px; overflow-y: auto; border: 1px solid #e5e5e5; border-radius: 6px; background-color: white;">
-                        <!-- 刷新历史将通过 JS 动态加载 -->
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="hideRefreshModal()">关闭</button>
             </div>
         </div>
     </div>

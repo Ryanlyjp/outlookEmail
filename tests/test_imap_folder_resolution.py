@@ -223,144 +223,16 @@ class ImapFolderResolutionTests(unittest.TestCase):
         self.assertEqual(result['method'], 'method-inbox / method-junkemail')
 
 
-class ExternalAccountsApiTests(unittest.TestCase):
+class PublicApiRemovalTests(unittest.TestCase):
     def setUp(self):
-        self.app = web_outlook_app.app
-        self.app.config['TESTING'] = True
-        self.client = self.app.test_client()
+        web_outlook_app.app.config['TESTING'] = True
+        self.client = web_outlook_app.app.test_client()
 
-        with self.app.app_context():
-            db = web_outlook_app.get_db()
-            db.execute('DELETE FROM account_tags')
-            db.execute('DELETE FROM account_aliases')
-            db.execute('DELETE FROM account_refresh_logs')
-            db.execute('DELETE FROM accounts')
-            db.execute('DELETE FROM tags')
-            db.execute("DELETE FROM groups WHERE name NOT IN ('默认分组', '临时邮箱')")
-            db.commit()
-
-            self.assertTrue(web_outlook_app.set_setting('external_api_key', 'test-external-key'))
-
-            tag_id = web_outlook_app.add_tag('核心', '#1a1a1a')
-            self.assertIsNotNone(tag_id)
-
-            added = web_outlook_app.add_account(
-                'user@outlook.com',
-                'password123',
-                '24d9a0ed-8787-4584-883c-2fd79308940a',
-                '0.AXEA_refresh',
-                group_id=1,
-                remark='主账号',
-                forward_enabled=True
-            )
-            self.assertTrue(added)
-
-            account = web_outlook_app.get_account_by_email('user@outlook.com')
-            self.assertIsNotNone(account)
-
-            alias_ok, _, alias_errors = web_outlook_app.replace_account_aliases(
-                account['id'],
-                account['email'],
-                ['alias@example.com'],
-                db
-            )
-            self.assertTrue(alias_ok, alias_errors)
-            db.commit()
-
-            self.assertTrue(web_outlook_app.add_account_tag(account['id'], tag_id))
-            db.execute(
-                '''
-                INSERT INTO account_refresh_logs (account_id, account_email, refresh_type, status, error_message)
-                VALUES (?, ?, ?, ?, ?)
-                ''',
-                (account['id'], account['email'], 'manual', 'success', None)
-            )
-            db.commit()
-
-    def test_external_accounts_requires_api_key(self):
-        response = self.client.get('/api/external/accounts')
-
-        self.assertEqual(response.status_code, 401)
-        payload = response.get_json()
-        self.assertFalse(payload['success'])
-        self.assertIn('API Key', payload['error'])
-
-    def test_external_accounts_returns_sanitized_accounts(self):
-        with self.app.app_context():
-            group_id = web_outlook_app.add_group('代理组', '带代理的账号', '#123456')
-            self.assertIsNotNone(group_id)
-            added = web_outlook_app.add_account(
-                'other@example.com',
-                'password456',
-                '',
-                '',
-                group_id=group_id,
-                remark='次账号',
-                account_type='imap',
-                provider='custom',
-                imap_host='imap.example.com',
-                imap_port=993,
-                imap_password='imap-secret',
-                forward_enabled=False
-            )
-            self.assertTrue(added)
-
-        response = self.client.get(
-            '/api/external/accounts?group_id=1',
-            headers={'X-API-Key': 'test-external-key'}
-        )
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertTrue(payload['success'])
-        self.assertEqual(payload['total'], 1)
-        self.assertEqual(len(payload['accounts']), 1)
-
-        account = payload['accounts'][0]
-        self.assertEqual(account['email'], 'user@outlook.com')
-        self.assertEqual(account['aliases'], ['alias@example.com'])
-        self.assertEqual(account['alias_count'], 1)
-        self.assertEqual(account['group_id'], 1)
-        self.assertEqual(account['group_name'], '默认分组')
-        self.assertEqual(account['remark'], '主账号')
-        self.assertEqual(account['status'], 'active')
-        self.assertEqual(account['provider'], 'outlook')
-        self.assertTrue(account['forward_enabled'])
-        self.assertEqual(account['last_refresh_status'], 'success')
-        self.assertIsNone(account['last_refresh_error'])
-        self.assertEqual(account['tags'][0]['name'], '核心')
-        self.assertNotIn('password', account)
-        self.assertNotIn('refresh_token', account)
-        self.assertNotIn('client_id', account)
-        self.assertNotIn('imap_host', account)
-        self.assertNotIn('imap_port', account)
-
-    def test_external_emails_supports_all_folder(self):
-        expected_result = {
-            'success': True,
-            'emails': [
-                {'id': 'junk-1', 'folder': 'junkemail', 'date': '2026-01-02T00:00:00Z'},
-                {'id': 'inbox-1', 'folder': 'inbox', 'date': '2026-01-01T00:00:00Z'},
-            ],
-            'method': 'Graph API / IMAP (New)',
-            'has_more': False,
-        }
-
-        with patch.object(web_outlook_app, 'fetch_account_emails', return_value=expected_result) as fetch_mock:
-            response = self.client.get(
-                '/api/external/emails?email=user@outlook.com&folder=all&skip=0&top=20',
-                headers={'X-API-Key': 'test-external-key'}
-            )
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertEqual(payload, expected_result)
-
-        called_account, called_folder, called_skip, called_top = fetch_mock.call_args.args
-        self.assertEqual(called_account['email'], 'user@outlook.com')
-        self.assertEqual(called_folder, 'all')
-        self.assertEqual(called_skip, 0)
-        self.assertEqual(called_top, 20)
+    def test_external_account_and_mail_routes_are_not_registered(self):
+        registered_paths = {rule.rule for rule in web_outlook_app.app.url_map.iter_rules()}
+        for path in ('/api/external/accounts', '/api/external/emails'):
+            with self.subTest(path=path):
+                self.assertNotIn(path, registered_paths)
 
 
 class BatchForwardingApiTests(unittest.TestCase):
@@ -475,6 +347,15 @@ class AssetRenderingTests(unittest.TestCase):
         self.assertIn('href="/assets/index.css"', html)
         self.assertNotIn('href="/static/index.css"', html)
 
+    def test_index_core_keeps_shared_helpers_after_refresh_ui_removal(self):
+        response = self.client.get('/static/js/index/01-core.js')
+        script = response.get_data(as_text=True)
+        response.close()
+
+        self.assertIn('function closeAllModals()', script)
+        self.assertIn('function formatDateTime(dateStr)', script)
+        self.assertNotIn("getElementById('refreshProgress')", script)
+
     def test_bundled_stylesheet_contains_combined_css_without_imports(self):
         response = self.client.get('/assets/index.css')
         css = response.get_data(as_text=True)
@@ -485,6 +366,59 @@ class AssetRenderingTests(unittest.TestCase):
         self.assertIn('.toast', css)
         self.assertIn('.group-panel', css)
         self.assertIn('.account-panel', css)
+
+    def test_account_pool_ui_and_actions_are_present(self):
+        with self.client.session_transaction() as session:
+            session['logged_in'] = True
+
+        index_html = self.client.get('/').get_data(as_text=True)
+        response = self.client.get('/account-pool')
+        html = response.get_data(as_text=True)
+        script_response = self.client.get('/static/js/account-pool.js')
+        script = script_response.get_data(as_text=True)
+        script_response.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('id="accountPoolPage"', index_html)
+        self.assertNotIn('/static/js/account-pool.js', index_html)
+        self.assertIn('href="/account-pool"', index_html)
+        self.assertIn('id="pageSize"', html)
+        self.assertIn('id="domainFilter"', html)
+        self.assertIn('id="testAllBtn"', html)
+        self.assertIn('id="retryFailedBtn"', html)
+        self.assertNotIn('id="refreshModal"', html)
+        self.assertNotIn('Token刷新管理', html)
+        self.assertIn('/static/js/account-pool.js', html)
+        self.assertIn('/api/accounts/${id}/refresh', script)
+        self.assertIn('/api/accounts/refresh-selected', script)
+        self.assertIn("fetch('/api/csrf-token')", script)
+        self.assertIn("'X-CSRFToken': csrfToken", script)
+        self.assertIn("${a.email || ''}----${a.password || ''}", script)
+        self.assertIn("----${a.client_id || ''}----${a.refresh_token || ''}", script)
+
+    def test_removed_api_and_temp_mail_settings_are_not_exposed(self):
+        with self.client.session_transaction() as session:
+            session['logged_in'] = True
+
+        html = self.client.get('/').get_data(as_text=True)
+        settings = self.client.get('/api/settings').get_json()['settings']
+
+        self.assertNotIn('settingsApiKey', html)
+        self.assertNotIn('settingsDuckmailBaseUrl', html)
+        self.assertNotIn('settingsCloudflareWorkerDomain', html)
+        for key in ('external_api_key', 'gptmail_api_key', 'duckmail_base_url', 'duckmail_api_key',
+                    'cloudflare_worker_domain', 'cloudflare_email_domains', 'cloudflare_admin_password'):
+            self.assertNotIn(key, settings)
+
+    def test_account_pool_csrf_header_allows_post_request(self):
+        with self.client.session_transaction() as session:
+            session['logged_in'] = True
+
+        token = self.client.get('/api/csrf-token').get_json()['csrf_token']
+        response = self.client.post('/api/accounts/999999/refresh', headers={'X-CSRFToken': token})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()['success'])
 
 
 class RefreshTokenProxyFallbackTests(unittest.TestCase):
@@ -550,14 +484,23 @@ class RefreshTokenProxyFallbackTests(unittest.TestCase):
             '(Caused by ProxyError(\'Unable to connect to proxy\', OSError(\'proxy connect failed\')))'
         )
 
-        with patch.object(web_outlook_app.requests, 'request', side_effect=[proxy_error, http_proxy_error, FakeResponse()]) as mocked_request:
+        with patch.object(
+            web_outlook_app.requests,
+            'request',
+            side_effect=[proxy_error, http_proxy_error, FakeResponse(), FakeResponse()],
+        ) as mocked_request, patch.object(
+            web_outlook_app,
+            'get_access_token_imap_result',
+            return_value={'success': False, 'error': 'IMAP scope unavailable'},
+        ):
             response = self.client.post(f'/api/accounts/{self.account_id}/refresh')
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertTrue(payload['success'])
-        self.assertEqual(payload['message'], 'Token 刷新成功')
-        self.assertEqual(mocked_request.call_count, 3)
+        self.assertEqual(payload['message'], '账号权限测试通过')
+        self.assertEqual(payload['permissions']['health_status'], 'graph_only')
+        self.assertEqual(mocked_request.call_count, 4)
         self.assertEqual(
             mocked_request.call_args_list[0].kwargs['proxies'],
             {'http': 'socks5://127.0.0.1:1080', 'https': 'socks5://127.0.0.1:1080'},

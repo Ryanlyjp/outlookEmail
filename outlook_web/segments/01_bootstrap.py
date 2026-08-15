@@ -109,8 +109,26 @@ LOGIN_PASSWORD = os.getenv("LOGIN_PASSWORD", "admin123")
 # ==================== 配置 ====================
 # Token 端点
 TOKEN_URL_LIVE = "https://login.live.com/oauth20_token.srf"
-TOKEN_URL_GRAPH = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-TOKEN_URL_IMAP = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+OAUTH_AUTHORITIES = {'common', 'consumers'}
+MAIL_PROTOCOLS = {'auto', 'graph', 'imap_oauth'}
+
+
+def normalize_oauth_authority(value: str) -> str:
+    authority = str(value or 'common').strip().lower()
+    return authority if authority in OAUTH_AUTHORITIES else 'common'
+
+
+def normalize_mail_protocol(value: str) -> str:
+    protocol = str(value or 'auto').strip().lower()
+    return protocol if protocol in MAIL_PROTOCOLS else 'auto'
+
+
+def get_oauth_token_url(authority: str = 'common') -> str:
+    return f"https://login.microsoftonline.com/{normalize_oauth_authority(authority)}/oauth2/v2.0/token"
+
+
+TOKEN_URL_GRAPH = get_oauth_token_url('common')
+TOKEN_URL_IMAP = get_oauth_token_url('consumers')
 
 # IMAP 服务器配置
 IMAP_SERVER_OLD = "outlook.office365.com"
@@ -741,6 +759,14 @@ def init_db():
             remark TEXT,
             status TEXT DEFAULT 'active',
             account_type TEXT DEFAULT 'outlook',
+            mail_protocol TEXT DEFAULT 'auto',
+            oauth_authority TEXT DEFAULT 'common',
+            health_status TEXT DEFAULT '',
+            health_detail TEXT DEFAULT '',
+            graph_status TEXT DEFAULT '',
+            imap_status TEXT DEFAULT '',
+            permission_scopes TEXT DEFAULT '',
+            last_protocol_test_at TIMESTAMP,
             provider TEXT DEFAULT 'outlook',
             imap_host TEXT,
             imap_port INTEGER DEFAULT 993,
@@ -886,6 +912,22 @@ def init_db():
         cursor.execute('ALTER TABLE accounts ADD COLUMN last_refresh_at TIMESTAMP')
     if 'account_type' not in columns:
         cursor.execute("ALTER TABLE accounts ADD COLUMN account_type TEXT DEFAULT 'outlook'")
+    if 'mail_protocol' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN mail_protocol TEXT DEFAULT 'auto'")
+    if 'oauth_authority' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN oauth_authority TEXT DEFAULT 'common'")
+    if 'health_status' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN health_status TEXT DEFAULT ''")
+    if 'health_detail' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN health_detail TEXT DEFAULT ''")
+    if 'graph_status' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN graph_status TEXT DEFAULT ''")
+    if 'imap_status' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN imap_status TEXT DEFAULT ''")
+    if 'permission_scopes' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN permission_scopes TEXT DEFAULT ''")
+    if 'last_protocol_test_at' not in columns:
+        cursor.execute("ALTER TABLE accounts ADD COLUMN last_protocol_test_at TIMESTAMP")
     if 'provider' not in columns:
         cursor.execute("ALTER TABLE accounts ADD COLUMN provider TEXT DEFAULT 'outlook'")
     if 'imap_host' not in columns:
@@ -1271,11 +1313,6 @@ def get_gptmail_api_key() -> str:
     """获取 GPTMail API Key（优先从数据库读取）"""
     api_key = get_setting('gptmail_api_key')
     return api_key if api_key else GPTMAIL_API_KEY
-
-
-def get_external_api_key() -> str:
-    """获取对外 API Key（从数据库读取，明文存储）"""
-    return get_setting('external_api_key', '')
 
 
 def get_duckmail_base_url() -> str:

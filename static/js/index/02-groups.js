@@ -635,7 +635,6 @@
                                 ${formatRelativeTime(acc.last_refresh_at)}
                             </span>
                             <div class="account-refresh-actions">
-                                <button class="account-otp-btn" type="button" onclick="event.stopPropagation(); extractLatestOtpForAccount(${acc.id}, '${escapeJs(acc.email)}', this)">提取OTP</button>
                                 ${acc.last_refresh_status === 'failed' ? '<button class="account-error-btn" type="button" onclick="event.stopPropagation(); showRefreshError(' + acc.id + ', \'' + escapeJs(acc.last_refresh_error || '未知错误') + '\', \'' + escapeJs(acc.email) + '\')">查看错误</button>' : ''}
                             </div>
                         </div>
@@ -1051,12 +1050,14 @@
             const refreshTokenGroup = document.getElementById('editRefreshToken')?.closest('.form-group');
             const imapFields = document.getElementById('editImapFields');
             const customImapFields = document.getElementById('editCustomImapFields');
+            const outlookOauthSettings = document.getElementById('editOutlookOauthSettings');
 
             if (passwordGroup) passwordGroup.style.display = isOutlook ? '' : 'none';
             if (clientIdGroup) clientIdGroup.style.display = isOutlook ? '' : 'none';
             if (refreshTokenGroup) refreshTokenGroup.style.display = isOutlook ? '' : 'none';
             if (imapFields) imapFields.style.display = isOutlook ? 'none' : '';
             if (customImapFields) customImapFields.style.display = provider === 'custom' ? '' : 'none';
+            if (outlookOauthSettings) outlookOauthSettings.style.display = isOutlook ? '' : 'none';
         }
 
         function updateImportHint() {
@@ -1068,6 +1069,7 @@
             const providerSelect = document.getElementById('importProviderSelect');
             const exampleEl = document.getElementById('importFormatExample');
             const customImapSettings = document.getElementById('customImapSettings');
+            const outlookOauthSettings = document.getElementById('importOutlookOauthSettings');
             const customHost = document.getElementById('importImapHost');
             const customPort = document.getElementById('importImapPort');
             if (!hintEl || !inputEl) return;
@@ -1109,6 +1111,7 @@
             const provider = providerSelect ? providerSelect.value : 'outlook';
             const isOutlook = provider === 'outlook';
             if (customImapSettings) customImapSettings.style.display = provider === 'custom' ? '' : 'none';
+            if (outlookOauthSettings) outlookOauthSettings.style.display = isOutlook ? '' : 'none';
             if (exampleEl) exampleEl.style.display = '';
 
             if (isOutlook) {

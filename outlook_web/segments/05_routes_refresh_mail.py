@@ -55,7 +55,8 @@ def load_refresh_target_accounts(db_conn):
     """获取可参与批量刷新账号：active + 最近一次刷新失败而被停用的账号。"""
     cursor = db_conn.execute(
         '''
-        SELECT a.id, a.email, a.client_id, a.refresh_token, a.group_id
+        SELECT a.id, a.email, a.client_id, a.refresh_token, a.group_id,
+               a.mail_protocol, a.oauth_authority
         FROM accounts a
         WHERE COALESCE(a.account_type, 'outlook') = 'outlook'
           AND (
@@ -114,32 +115,134 @@ def log_forwarding_result(account_id: int, account_email: str, message_id: str, 
 
 
 def test_refresh_token(client_id: str, refresh_token: str, proxy_url: str = None,
-                       fallback_proxy_urls: List[str] = None) -> tuple[bool, str]:
-    """测试 refresh token 是否有效，返回 (是否成功, 错误信息)"""
-    try:
-        # 尝试使用 Graph API 获取 access token
-        # 使用与 get_access_token_graph 相同的 scope，确保一致性
-        res = post_with_proxy_fallback(
-            TOKEN_URL_GRAPH,
-            data={
-                "client_id": client_id,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "scope": "https://graph.microsoft.com/.default"
-            },
-            timeout=30,
-            proxy_url=proxy_url,
-            fallback_proxy_urls=fallback_proxy_urls,
+                       fallback_proxy_urls: List[str] = None, mail_protocol: str = 'auto',
+                       oauth_authority: str = 'common') -> tuple[bool, str]:
+    """兼容旧调用：仅验证当前配置协议能否换取 Token。"""
+    protocol = normalize_mail_protocol(mail_protocol)
+    if protocol == 'imap_oauth':
+        result = get_access_token_imap_result(
+            client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority
         )
+    else:
+        result = get_access_token_graph_result(
+            client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority
+        )
+    return bool(result.get('success')), '' if result.get('success') else str(result.get('error') or '未知错误')
 
-        if res.status_code == 200:
-            return True, None
-        else:
-            error_data = res.json()
-            error_msg = error_data.get('error_description', error_data.get('error', '未知错误'))
-            return False, error_msg
-    except Exception as e:
-        return False, f"请求异常: {str(e)}"
+
+def probe_account_permissions(email_addr: str, client_id: str, refresh_token: str,
+                              proxy_url: str = None, fallback_proxy_urls: List[str] = None,
+                              mail_protocol: str = 'auto', oauth_authority: str = 'common') -> Dict[str, Any]:
+    """实际探测 Graph 读信和 OAuth IMAP 登录能力，不发送邮件。"""
+    protocol = normalize_mail_protocol(mail_protocol)
+    authority = normalize_oauth_authority(oauth_authority)
+    graph_status = 'fail'
+    imap_status = 'fail'
+    graph_error = ''
+    imap_error = ''
+    scopes = {'graph': '', 'imap': ''}
+
+    graph_token = get_access_token_graph_result(
+        client_id, refresh_token, proxy_url, fallback_proxy_urls, authority
+    )
+    if graph_token.get('success'):
+        scopes['graph'] = graph_token.get('scope', '') or ''
+        try:
+            response = get_with_proxy_fallback(
+                'https://graph.microsoft.com/v1.0/me/messages',
+                headers={'Authorization': f"Bearer {graph_token['access_token']}"},
+                params={'$top': 1, '$select': 'id,receivedDateTime'},
+                timeout=30,
+                proxy_url=proxy_url,
+                fallback_proxy_urls=fallback_proxy_urls,
+            )
+            if response.status_code == 200:
+                graph_status = 'ok'
+            else:
+                graph_error = sanitize_error_details(str(get_response_details(response)))
+        except Exception as exc:
+            graph_error = sanitize_error_details(str(exc))
+    else:
+        graph_error = sanitize_error_details(str(graph_token.get('error') or 'Graph Token 获取失败'))
+
+    imap_token = get_access_token_imap_result(
+        client_id, refresh_token, proxy_url, fallback_proxy_urls, authority
+    )
+    if imap_token.get('success'):
+        scopes['imap'] = imap_token.get('scope', '') or ''
+        connection = None
+        try:
+            with proxy_socket_context(proxy_url):
+                connection = imaplib.IMAP4_SSL(IMAP_SERVER_NEW, IMAP_PORT, timeout=IMAP_TIMEOUT)
+            auth_string = f"user={email_addr}\1auth=Bearer {imap_token['access_token']}\1\1".encode('utf-8')
+            connection.authenticate('XOAUTH2', lambda _: auth_string)
+            select_status, _ = connection.select('INBOX', readonly=True)
+            if select_status == 'OK':
+                imap_status = 'ok'
+            else:
+                imap_error = f'IMAP SELECT {select_status}'
+        except Exception as exc:
+            imap_error = sanitize_error_details(str(exc))
+        finally:
+            if connection:
+                try:
+                    connection.logout()
+                except Exception:
+                    pass
+    else:
+        imap_error = sanitize_error_details(str(imap_token.get('error') or 'IMAP Token 获取失败'))
+
+    graph_ok = graph_status == 'ok'
+    imap_ok = imap_status == 'ok'
+    if graph_ok and imap_ok:
+        health_status = 'all'
+    elif graph_ok:
+        health_status = 'graph_only'
+    elif imap_ok:
+        health_status = 'imap_only'
+    elif not graph_token.get('success') and not imap_token.get('success'):
+        health_status = 'token_invalid'
+    else:
+        health_status = 'unavailable'
+
+    configured_ok = (
+        graph_ok if protocol == 'graph'
+        else imap_ok if protocol == 'imap_oauth'
+        else graph_ok or imap_ok
+    )
+    problems = []
+    if not graph_ok:
+        problems.append(f'Graph: {graph_error or "不可用"}')
+    if not imap_ok:
+        problems.append(f'IMAP: {imap_error or "不可用"}')
+    return {
+        'success': configured_ok,
+        'health_status': health_status,
+        'graph_status': graph_status,
+        'imap_status': imap_status,
+        'permission_scopes': scopes,
+        'error': '；'.join(problems),
+    }
+
+
+def save_account_permission_probe(db_conn, account_id: int, result: Dict[str, Any]) -> None:
+    db_conn.execute(
+        '''
+        UPDATE accounts
+        SET health_status = ?, health_detail = ?, graph_status = ?, imap_status = ?,
+            permission_scopes = ?, last_protocol_test_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        ''',
+        (
+            result.get('health_status', ''),
+            result.get('error', ''),
+            result.get('graph_status', ''),
+            result.get('imap_status', ''),
+            json.dumps(result.get('permission_scopes', {}), ensure_ascii=False),
+            account_id,
+        )
+    )
 
 
 def refresh_outlook_account_token(account: sqlite3.Row, refresh_type: str = 'manual') -> Dict[str, Any]:
@@ -172,14 +275,31 @@ def refresh_outlook_account_token(account: sqlite3.Row, refresh_type: str = 'man
             )
         }
 
-    success, error_msg = test_refresh_token(client_id, refresh_token, proxy_url, fallback_proxy_urls)
-    sanitized_error = sanitize_error_details(error_msg) if error_msg else ''
+    probe_result = probe_account_permissions(
+        account_email,
+        client_id,
+        refresh_token,
+        proxy_url,
+        fallback_proxy_urls,
+        account['mail_protocol'] if 'mail_protocol' in account.keys() else 'auto',
+        account['oauth_authority'] if 'oauth_authority' in account.keys() else 'common',
+    )
+    success = bool(probe_result.get('success'))
+    error_msg = probe_result.get('error', '')
+    sanitized_error = sanitize_error_details(error_msg) if error_msg and not success else ''
 
     # 记录刷新结果
     log_refresh_result(account_id, account_email, refresh_type, 'success' if success else 'failed', sanitized_error or None)
+    db = get_db()
+    save_account_permission_probe(db, account_id, probe_result)
+    db.commit()
 
     if success:
-        return {'success': True, 'message': 'Token 刷新成功'}
+        return {
+            'success': True,
+            'message': '账号权限测试通过',
+            'permissions': probe_result,
+        }
 
     return {
         'success': False,
@@ -199,7 +319,7 @@ def refresh_outlook_account_token(account: sqlite3.Row, refresh_type: str = 'man
 def api_refresh_account(account_id):
     """刷新单个账号的 token"""
     db = get_db()
-    cursor = db.execute('SELECT id, email, client_id, refresh_token, group_id, account_type, provider FROM accounts WHERE id = ?', (account_id,))
+    cursor = db.execute('SELECT id, email, client_id, refresh_token, group_id, account_type, provider, mail_protocol, oauth_authority FROM accounts WHERE id = ?', (account_id,))
     account = cursor.fetchone()
 
     if not account:
@@ -217,7 +337,11 @@ def api_refresh_account(account_id):
 
     result = refresh_outlook_account_token(account, 'manual')
     if result['success']:
-        return jsonify({'success': True, 'message': result['message']})
+        return jsonify({
+            'success': True,
+            'message': result['message'],
+            'permissions': result.get('permissions', {}),
+        })
     return jsonify({'success': False, 'error': result['error_payload']})
 
 
@@ -249,7 +373,8 @@ def api_refresh_selected_accounts():
     db = get_db()
     placeholders = ','.join('?' * len(account_ids))
     cursor = db.execute(f'''
-        SELECT id, email, client_id, refresh_token, group_id, account_type, provider
+        SELECT id, email, client_id, refresh_token, group_id, account_type, provider,
+               mail_protocol, oauth_authority
         FROM accounts
         WHERE id IN ({placeholders})
         ORDER BY email COLLATE NOCASE ASC
@@ -397,7 +522,12 @@ def api_refresh_all_accounts():
                 fallback_proxy_urls = get_group_proxy_failover_urls(dict(group_row) if group_row else None)
 
                 # 测试 refresh token
-                success, error_msg = test_refresh_token(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+                probe_result = probe_account_permissions(
+                    account_email, client_id, refresh_token, proxy_url, fallback_proxy_urls,
+                    account['mail_protocol'], account['oauth_authority']
+                )
+                success = bool(probe_result.get('success'))
+                error_msg = probe_result.get('error', '') if not success else None
 
                 # 记录刷新结果（使用当前连接）
                 try:
@@ -406,6 +536,7 @@ def api_refresh_all_accounts():
                         VALUES (?, ?, ?, ?, ?)
                     ''', (account_id, account_email, 'manual', 'success' if success else 'failed', error_msg))
                     update_account_status_by_refresh_result(conn, account_id, success)
+                    save_account_permission_probe(conn, account_id, probe_result)
 
                     conn.commit()
                 except Exception as e:
@@ -450,7 +581,8 @@ def api_refresh_failed_accounts():
 
     # 获取最近一次刷新失败的账号列表
     cursor = db.execute('''
-        SELECT DISTINCT a.id, a.email, a.client_id, a.refresh_token
+        SELECT DISTINCT a.id, a.email, a.client_id, a.refresh_token, a.group_id,
+               a.account_type, a.provider, a.mail_protocol, a.oauth_authority
         FROM accounts a
         INNER JOIN (
             SELECT account_id, MAX(created_at) as last_refresh
@@ -467,40 +599,15 @@ def api_refresh_failed_accounts():
     failed_list = []
 
     for account in accounts:
-        account_id = account['id']
-        account_email = account['email']
-        client_id = account['client_id']
-        encrypted_refresh_token = account['refresh_token']
-
-        # 解密 refresh_token
-        try:
-            refresh_token = decrypt_data(encrypted_refresh_token) if encrypted_refresh_token else encrypted_refresh_token
-        except Exception as e:
-            # 解密失败，记录错误
-            failed_count += 1
-            error_msg = f"解密 token 失败: {str(e)}"
-            failed_list.append({
-                'id': account_id,
-                'email': account_email,
-                'error': error_msg
-            })
-            log_refresh_result(account_id, account_email, 'retry', 'failed', error_msg)
-            continue
-
-        # 测试 refresh token
-        success, error_msg = test_refresh_token(client_id, refresh_token)
-
-        # 记录刷新结果
-        log_refresh_result(account_id, account_email, 'retry', 'success' if success else 'failed', error_msg)
-
-        if success:
+        result = refresh_outlook_account_token(account, 'retry')
+        if result.get('success'):
             success_count += 1
         else:
             failed_count += 1
             failed_list.append({
-                'id': account_id,
-                'email': account_email,
-                'error': error_msg
+                'id': account['id'],
+                'email': account['email'],
+                'error': result.get('error_message') or '未知错误'
             })
 
     return jsonify({
@@ -618,7 +725,12 @@ def api_trigger_scheduled_refresh():
                         proxy_url = group_row['proxy_url'] or ''
                 fallback_proxy_urls = get_group_proxy_failover_urls(dict(group_row) if group_row else None)
 
-                success, error_msg = test_refresh_token(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+                probe_result = probe_account_permissions(
+                    account_email, client_id, refresh_token, proxy_url, fallback_proxy_urls,
+                    account['mail_protocol'], account['oauth_authority']
+                )
+                success = bool(probe_result.get('success'))
+                error_msg = probe_result.get('error', '') if not success else None
 
                 try:
                     conn.execute('''
@@ -626,6 +738,7 @@ def api_trigger_scheduled_refresh():
                         VALUES (?, ?, ?, ?, ?)
                     ''', (account_id, account_email, 'scheduled', 'success' if success else 'failed', error_msg))
                     update_account_status_by_refresh_result(conn, account_id, success)
+                    save_account_permission_probe(conn, account_id, probe_result)
 
                     conn.commit()
                 except Exception as e:
@@ -921,9 +1034,12 @@ def api_get_refresh_stats():
 # ==================== Email Deletion Helpers ====================
 
 def delete_emails_graph(client_id: str, refresh_token: str, message_ids: List[str], proxy_url: str = None,
-                        fallback_proxy_urls: List[str] = None) -> Dict[str, Any]:
+                        fallback_proxy_urls: List[str] = None,
+                        oauth_authority: str = 'common') -> Dict[str, Any]:
     """通过 Graph API 批量删除邮件（永久删除）"""
-    access_token = get_access_token_graph(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    access_token = get_access_token_graph(
+        client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority
+    )
     if not access_token:
         return {"success": False, "error": "获取 Access Token 失败"}
 
@@ -990,9 +1106,12 @@ def delete_emails_graph(client_id: str, refresh_token: str, message_ids: List[st
     }
 
 def delete_emails_imap(email_addr: str, client_id: str, refresh_token: str, message_ids: List[str], server: str,
-                       proxy_url: str = None, fallback_proxy_urls: List[str] = None) -> Dict[str, Any]:
+                       proxy_url: str = None, fallback_proxy_urls: List[str] = None,
+                       oauth_authority: str = 'consumers') -> Dict[str, Any]:
     """通过 IMAP 删除邮件（永久删除）"""
-    access_token = get_access_token_graph(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    access_token = get_access_token_imap(
+        client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority
+    )
     if not access_token:
         return {"success": False, "error": "获取 Access Token 失败"}
         
@@ -1156,36 +1275,43 @@ def fetch_account_folder_emails(account: Dict[str, Any], folder: str, skip: int,
         }
 
     all_errors = {}
-    graph_result = get_emails_graph(
-        account['client_id'],
-        account['refresh_token'],
-        folder_name,
-        skip,
-        top,
-        proxy_url,
-        fallback_proxy_urls,
-    )
-    if graph_result.get('success'):
-        return {
-            'success': True,
-            'emails': [format_graph_email_item(item, folder_name) for item in graph_result.get('emails', [])],
-            'method': 'Graph API',
-            'has_more': len(graph_result.get('emails', [])) >= top,
-        }
+    mail_protocol = normalize_mail_protocol(account.get('mail_protocol'))
+    oauth_authority = normalize_oauth_authority(account.get('oauth_authority'))
 
-    graph_error = graph_result.get('error')
-    all_errors['graph'] = graph_error
-    if isinstance(graph_error, dict) and graph_error.get('type') in ('ProxyError', 'ConnectionError'):
-        connection_error_message = (
-            '代理连接失败，请检查分组代理设置'
-            if proxy_url
-            else '连接 Microsoft 服务失败，请检查服务器网络、DNS 或上游访问能力'
+    if mail_protocol in ('auto', 'graph'):
+        graph_result = get_emails_graph(
+            account['client_id'],
+            account['refresh_token'],
+            folder_name,
+            skip,
+            top,
+            proxy_url,
+            fallback_proxy_urls,
+            oauth_authority,
         )
-        return {
-            'success': False,
-            'error': connection_error_message,
-            'details': all_errors
-        }
+        if graph_result.get('success'):
+            return {
+                'success': True,
+                'emails': [format_graph_email_item(item, folder_name) for item in graph_result.get('emails', [])],
+                'method': 'Graph API',
+                'has_more': len(graph_result.get('emails', [])) >= top,
+            }
+
+        graph_error = graph_result.get('error')
+        all_errors['graph'] = graph_error
+        if mail_protocol == 'graph':
+            return {'success': False, 'error': graph_error or 'Graph 获取邮件失败', 'details': all_errors}
+        if isinstance(graph_error, dict) and graph_error.get('type') in ('ProxyError', 'ConnectionError'):
+            connection_error_message = (
+                '代理连接失败，请检查分组代理设置'
+                if proxy_url
+                else '连接 Microsoft 服务失败，请检查服务器网络、DNS 或上游访问能力'
+            )
+            return {
+                'success': False,
+                'error': connection_error_message,
+                'details': all_errors
+            }
 
     imap_new_result = get_emails_imap_with_server(
         account['email'],
@@ -1197,6 +1323,7 @@ def fetch_account_folder_emails(account: Dict[str, Any], folder: str, skip: int,
         IMAP_SERVER_NEW,
         proxy_url,
         fallback_proxy_urls,
+        oauth_authority,
     )
     if imap_new_result.get('success'):
         return {
@@ -1217,6 +1344,7 @@ def fetch_account_folder_emails(account: Dict[str, Any], folder: str, skip: int,
         IMAP_SERVER_OLD,
         proxy_url,
         fallback_proxy_urls,
+        oauth_authority,
     )
     if imap_old_result.get('success'):
         return {
@@ -1329,8 +1457,19 @@ def api_delete_emails():
     if account.get('account_type') == 'imap':
         return jsonify({'success': False, 'error': 'IMAP 账号暂不支持批量删除邮件'})
 
-    graph_res = delete_emails_graph(account['client_id'], account['refresh_token'], message_ids, proxy_url, fallback_proxy_urls)
-    if graph_res['success']:
+    mail_protocol = normalize_mail_protocol(account.get('mail_protocol'))
+    oauth_authority = normalize_oauth_authority(account.get('oauth_authority'))
+
+    graph_res = {'success': False, 'error': '账号未配置 Graph 协议'}
+    if mail_protocol in ('auto', 'graph'):
+        graph_res = delete_emails_graph(
+            account['client_id'], account['refresh_token'], message_ids, proxy_url,
+            fallback_proxy_urls, oauth_authority
+        )
+        if graph_res['success']:
+            return jsonify(graph_res)
+
+    if mail_protocol == 'graph':
         return jsonify(graph_res)
 
     # 如果是代理错误，不再回退 IMAP
@@ -1347,6 +1486,7 @@ def api_delete_emails():
         IMAP_SERVER_NEW,
         proxy_url,
         fallback_proxy_urls,
+        oauth_authority,
     )
     if imap_res['success']:
         return jsonify(imap_res)
@@ -1360,6 +1500,7 @@ def api_delete_emails():
         IMAP_SERVER_OLD,
         proxy_url,
         fallback_proxy_urls,
+        oauth_authority,
     )
     if imap_old_res['success']:
         return jsonify(imap_old_res)
@@ -1382,6 +1523,8 @@ def api_get_email_detail(email_addr, message_id):
     folder = normalize_folder_name(request.args.get('folder', 'inbox'))
     proxy_url = get_account_proxy_url(account)
     fallback_proxy_urls = get_account_proxy_failover_urls(account)
+    mail_protocol = normalize_mail_protocol(account.get('mail_protocol'))
+    oauth_authority = normalize_oauth_authority(account.get('oauth_authority'))
 
     if account.get('account_type') == 'imap':
         detail_result = get_email_detail_imap_generic_result(
@@ -1398,13 +1541,14 @@ def api_get_email_detail(email_addr, message_id):
             return jsonify(detail_result)
         return jsonify({'success': False, 'error': detail_result.get('error', '获取邮件详情失败')})
 
-    if method == 'graph':
+    if mail_protocol != 'imap_oauth' and method == 'graph':
         detail = get_email_detail_graph(
             account['client_id'],
             account['refresh_token'],
             message_id,
             proxy_url,
             fallback_proxy_urls,
+            oauth_authority,
         )
         if detail:
             return jsonify({
@@ -1421,7 +1565,10 @@ def api_get_email_detail(email_addr, message_id):
                 }
             })
 
-    # 如果 Graph API 失败，尝试 IMAP
+    if mail_protocol == 'graph':
+        return jsonify({'success': False, 'error': 'Graph 获取邮件详情失败'})
+
+    # auto 或 imap_oauth 使用 OAuth IMAP
     detail = get_email_detail_imap(
         account['email'],
         account['client_id'],
@@ -1430,6 +1577,7 @@ def api_get_email_detail(email_addr, message_id):
         folder,
         proxy_url,
         fallback_proxy_urls,
+        oauth_authority,
     )
     if detail:
         return jsonify({'success': True, 'email': detail})

@@ -31,7 +31,7 @@
                 操作
             </button>
             <div class="navbar-actions-menu" id="navbarActionsMenu">
-                <button class="navbar-btn" id="refreshTokensBtn" type="button" onclick="showRefreshModal()">Token刷新管理</button>
+                <a class="navbar-btn" id="accountPoolBtn" href="/account-pool">号池管理</a>
                 <button class="navbar-btn" id="exportAccountsBtn" type="button" onclick="showExportModal()">导出邮箱</button>
                 <button class="navbar-btn" id="openSettingsBtn" type="button" onclick="showSettingsModal()">⚙️ 设置</button>
                 <button class="navbar-btn" id="logoutBtn" type="button" onclick="logout()" style="color: #dc3545;">退出登录</button>
@@ -137,7 +137,7 @@
                         <button class="batch-btn batch-btn-secondary" onclick="clearAccountSelection()">清空选择</button>
                     </div>
                     <div class="batch-action-group batch-action-group--accent">
-                        <button class="batch-btn batch-btn-primary" id="batchRefreshTokensBtn" onclick="refreshSelectedAccounts()">刷新 Token</button>
+                        <button class="batch-btn batch-btn-primary" id="batchRefreshTokensBtn" onclick="refreshSelectedAccounts()">权限测试</button>
                         <button class="batch-btn batch-btn-accent" id="batchEnableForwardingBtn" onclick="enableForwardingForSelectedAccounts()">开启转发</button>
                         <button class="batch-btn batch-btn-accent" id="batchDisableForwardingBtn" onclick="disableForwardingForSelectedAccounts()">取消转发</button>
                         <button class="batch-btn batch-btn-accent" onclick="showBatchTagModal('add')">标签+</button>

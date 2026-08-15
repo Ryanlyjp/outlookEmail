@@ -905,13 +905,19 @@ def trigger_refresh_internal():
                     proxy_url = group_row['proxy_url'] or ''
             fallback_proxy_urls = get_group_proxy_failover_urls(dict(group_row) if group_row else None)
 
-            success, error_msg = test_refresh_token(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+            probe_result = probe_account_permissions(
+                account_email, client_id, refresh_token, proxy_url, fallback_proxy_urls,
+                account['mail_protocol'], account['oauth_authority']
+            )
+            success = bool(probe_result.get('success'))
+            error_msg = probe_result.get('error', '') if not success else None
 
             conn.execute('''
                 INSERT INTO account_refresh_logs (account_id, account_email, refresh_type, status, error_message)
                 VALUES (?, ?, ?, ?, ?)
             ''', (account_id, account_email, 'scheduled', 'success' if success else 'failed', error_msg))
             update_account_status_by_refresh_result(conn, account_id, success)
+            save_account_permission_probe(conn, account_id, probe_result)
 
             if success:
                 success_count += 1
@@ -943,6 +949,8 @@ def api_update_account_v2(account_id):
     refresh_token = (data.get('refresh_token', '') or '').strip()
     account_type = (data.get('account_type', 'outlook') or 'outlook').strip().lower()
     provider = (data.get('provider', 'outlook') or 'outlook').strip().lower()
+    mail_protocol = normalize_mail_protocol(data.get('mail_protocol'))
+    oauth_authority = normalize_oauth_authority(data.get('oauth_authority'))
     imap_host = (data.get('imap_host', '') or '').strip()
     imap_password = data.get('imap_password', '') or ''
     group_id = data.get('group_id', 1)
@@ -1007,7 +1015,9 @@ def api_update_account_v2(account_id):
         imap_host,
         imap_port,
         imap_password,
-        forward_enabled
+        forward_enabled,
+        mail_protocol,
+        oauth_authority
     ):
         cleaned_aliases = get_account_aliases(account_id)
         if aliases_provided:
@@ -1056,42 +1066,6 @@ def api_get_emails_v2(email_addr):
             (account['id'],)
         )
         db.commit()
-    return jsonify(result)
-
-
-def api_external_get_emails_v2():
-    email_addr = get_query_arg_preserve_plus('email', '').strip()
-    folder = normalize_folder_name(request.args.get('folder', 'inbox'))
-    skip = int(request.args.get('skip', 0))
-    top = int(request.args.get('top', 1))
-    subject_contains = get_query_arg_preserve_plus('subject_contains', '').strip().lower()
-    from_contains = get_query_arg_preserve_plus('from_contains', '').strip().lower()
-    keyword = get_query_arg_preserve_plus('keyword', '').strip().lower()
-
-    if not email_addr:
-        return jsonify({'success': False, 'error': '缺少 email 参数'}), 400
-
-    valid_folders = sorted(VALID_MAIL_FOLDERS)
-    if folder not in VALID_MAIL_FOLDERS:
-        return jsonify({'success': False, 'error': f'folder 参数无效，仅支持 {", ".join(valid_folders)}'}), 400
-
-    if top > 50:
-        top = 50
-
-    account = get_account_by_email(email_addr)
-    if not account:
-        return jsonify({'success': False, 'error': '邮箱账号不存在'}), 404
-    result = fetch_account_emails(account, folder, skip, top)
-    if result.get('success'):
-        if subject_contains or from_contains or keyword:
-            result['emails'] = [
-                item for item in result.get('emails', [])
-                if email_matches_filters(account, item, subject_contains, from_contains, keyword)
-            ]
-        result['requested_email'] = email_addr
-        result['resolved_email'] = account.get('email', '')
-        if account.get('matched_alias'):
-            result['matched_alias'] = account.get('matched_alias')
     return jsonify(result)
 
 
@@ -1155,6 +1129,8 @@ def read_account_message_detail(account: Dict[str, Any], message_id: str, folder
     folder_name = normalize_folder_name(folder)
     proxy_url = get_account_proxy_url(account)
     fallback_proxy_urls = get_account_proxy_failover_urls(account)
+    mail_protocol = normalize_mail_protocol(account.get('mail_protocol'))
+    oauth_authority = normalize_oauth_authority(account.get('oauth_authority'))
 
     if account.get('account_type') == 'imap':
         result = get_email_detail_imap_generic_result(
@@ -1185,13 +1161,41 @@ def read_account_message_detail(account: Dict[str, Any], message_id: str, folder
             }
         }
 
-    detail = get_email_detail_graph(
-        account.get('client_id', ''),
-        account.get('refresh_token', ''),
-        str(message_id),
-        proxy_url,
-        fallback_proxy_urls,
-    )
+    detail = None
+    if mail_protocol in ('auto', 'graph'):
+        detail = get_email_detail_graph(
+            account.get('client_id', ''),
+            account.get('refresh_token', ''),
+            str(message_id),
+            proxy_url,
+            fallback_proxy_urls,
+            oauth_authority,
+        )
+    if not detail and mail_protocol in ('auto', 'imap_oauth'):
+        imap_detail = get_email_detail_imap(
+            account.get('email', ''),
+            account.get('client_id', ''),
+            account.get('refresh_token', ''),
+            str(message_id),
+            folder_name,
+            proxy_url,
+            fallback_proxy_urls,
+            oauth_authority,
+        )
+        if imap_detail:
+            body = str(imap_detail.get('body', '') or '')
+            return {
+                'success': True,
+                'email': {
+                    'id': str(imap_detail.get('id', '') or message_id),
+                    'subject': imap_detail.get('subject', '无主题'),
+                    'content': strip_html_content(body),
+                    'html_content': '',
+                    'from_address': imap_detail.get('from', '未知'),
+                    'timestamp': imap_detail.get('date', ''),
+                    'method': 'IMAP (OAuth)',
+                }
+            }
     if not detail:
         return {'success': False, 'error': '获取邮件详情失败'}
 
@@ -1457,99 +1461,8 @@ def find_latest_verification_code(account: Dict[str, Any], since_minutes: Option
     }
 
 
-def is_pool_external_enabled() -> bool:
-    value = str(get_setting('pool_external_enabled', 'true') or 'true').strip().lower()
-    return value in ('1', 'true', 'yes', 'on')
-
-
-def get_group_pool_counts(group_id: int) -> Dict[str, int]:
-    counts = {
-        'available': 0,
-        'claimed': 0,
-        'used': 0,
-        'cooldown': 0,
-        'frozen': 0,
-        'retired': 0,
-    }
-    for account in load_accounts(group_id):
-        status = str(account.get('pool_status', '') or '').strip().lower()
-        if status in counts:
-            counts[status] += 1
-    return counts
-
-
-def build_external_group_payload(group: Dict[str, Any], include_accounts: bool = False) -> Dict[str, Any]:
-    group_id = int(group.get('id') or 0)
-    payload = {
-        'group_id': group_id,
-        'name': group.get('name', ''),
-        'description': group.get('description', ''),
-        'color': group.get('color', ''),
-        'account_count': get_group_account_count(group_id),
-        'pool_counts': get_group_pool_counts(group_id),
-    }
-    if include_accounts:
-        payload['accounts'] = load_accounts(group_id)
-    return payload
-
-
-@app.route('/api/accounts/<int:account_id>/latest-verification-code', methods=['GET'])
-@login_required
-def api_get_latest_verification_code(account_id):
-    account = get_account_by_id(account_id)
-    if not account:
-        return jsonify({'success': False, 'error': '账号不存在'}), 404
-
-    since_minutes = request.args.get('since_minutes', type=int)
-    result = find_latest_verification_code(account, since_minutes=since_minutes)
-    status_code = 200 if result.get('success') else 404
-    return jsonify(result), status_code
-
-
-@app.route('/api/external/verification-code', methods=['GET'])
-@csrf_exempt
-@api_key_required
-def api_external_get_verification_code():
-    email_addr = get_query_arg_preserve_plus('email', '').strip()
-    if not email_addr:
-        return jsonify({'success': False, 'error': '缺少 email 参数'}), 400
-
-    account = get_account_by_email(email_addr)
-    if not account:
-        return jsonify({'success': False, 'error': '邮箱账号不存在'}), 404
-
-    since_minutes = request.args.get('since_minutes', type=int)
-    result = find_latest_verification_code(account, since_minutes=since_minutes)
-    if result.get('success'):
-        result['data']['requested_email'] = email_addr
-        result['data']['resolved_email'] = account.get('email', '')
-        if account.get('matched_alias'):
-            result['data']['matched_alias'] = account.get('matched_alias')
-        return jsonify(result)
-    return jsonify(result), 404
-
-
-@app.route('/api/external/pool/groups', methods=['GET'])
-@csrf_exempt
-@api_key_required
-def api_external_pool_groups():
-    if not is_pool_external_enabled():
-        return jsonify({'success': False, 'error': '邮箱池对外接口未启用'}), 403
-
-    group_id = request.args.get('group_id', type=int)
-    if group_id:
-        group = get_group_by_id(group_id)
-        if not group:
-            return jsonify({'success': False, 'error': '分组不存在'}), 404
-        return jsonify({'success': True, 'data': {'group': build_external_group_payload(group, include_accounts=True)}})
-
-    groups = [build_external_group_payload(group, include_accounts=False) for group in load_groups()]
-    return jsonify({'success': True, 'data': {'groups': groups}})
-
-
 app.view_functions['api_update_account'] = api_update_account_v2
 app.view_functions['api_get_emails'] = api_get_emails_v2
-app.view_functions['api_external_get_emails'] = api_external_get_emails_v2
 
 
 @app.errorhandler(400)

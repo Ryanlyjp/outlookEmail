@@ -1,6 +1,6 @@
 # 多邮箱邮件管理工具
 
-一个面向多邮箱账号场景的邮件管理工具，支持通过 Outlook/Hotmail OAuth、Microsoft Graph API 和标准 IMAP 统一读取、管理和转发邮件，并提供 Web 界面用于分组管理、账号管理、邮件查看和对外 API 调用。当前支持 Outlook/Hotmail、Gmail、QQ、163、126、Yahoo、阿里邮箱以及自定义 IMAP 邮箱，同时集成 GPTMail、DuckMail、Cloudflare Temp Email 多提供商临时邮箱能力。
+一个面向多邮箱账号场景的邮件与账号池管理工具，支持通过 Outlook/Hotmail OAuth、Microsoft Graph API 和标准 IMAP 统一读取、管理和转发邮件，并提供 Web 界面用于分组管理、账号权限测试、账号信息复制和邮件查看。当前支持 Outlook/Hotmail、Gmail、QQ、163、126、Yahoo、阿里邮箱以及自定义 IMAP 邮箱，同时集成 GPTMail、DuckMail、Cloudflare Temp Email 多提供商临时邮箱能力。
 ## 📦 快速开始
 ### 体验站点
 https://aso.de5.net
@@ -112,13 +112,11 @@ docker-compose up -d
 
 ## ✨ 功能特性
 
-### 本次迁移重点（2026-04）
+### 当前项目定位（2026-07）
 
-- 新增内部接口：`GET /api/accounts/<id>/latest-verification-code`
-- 新增对外接口：`GET /api/external/verification-code`
-- 新增对外接口：`GET /api/external/pool/groups`（支持 `group_id` 查询详情）
-- 修复 `email_matches_filters()` 中 Graph 路径关键词过滤逻辑，避免详情抓取分支不可达
-- 统一验证码提取逻辑：同时读取 `inbox` + `junkemail`，按最新邮件提取 6 位验证码
+- 增加账号池界面，支持筛选、单个/批量权限测试、复制账密和复制完整账号。
+- Outlook OAuth 账号可分别配置 Graph、OAuth IMAP 或自动回退，以及 `common` / `consumers` Token 端点。
+- 移除公开收件、验证码提取和邮箱池 API，仅保留登录后的 WebUI 内部接口。
 
 ### 邮件读取方式
 
@@ -135,9 +133,9 @@ docker-compose up -d
 - 📁 **分组管理** - 支持创建、编辑、删除邮箱分组，自定义分组颜色，支持分组级别代理设置
 - 🌐 **分组代理** - 每个分组可配置 HTTP/SOCKS5 代理
 - 📧 **多邮箱管理** - 批量导入和管理 Outlook/Hotmail OAuth / IMAP 邮箱账号
-- 🪪 **别名管理** - 支持给单个邮箱配置多个别名邮箱，主邮箱和别名都可用于检索邮件和调用对外 API
+- 🪪 **别名管理** - 支持给单个邮箱配置多个别名邮箱，主邮箱和别名都可用于检索邮件
 - 🔀 **别名高级用法** - 可将外部邮箱自动转发到本项目管理的邮箱 A，再把外部邮箱配置为 A 的别名，从而通过本项目统一读取邮件
-- 📬 **邮件查看** - Web 界面支持查看收件箱和垃圾邮件；API 支持 `inbox`、`junkemail`、`deleteditems`、`all`
+- 📬 **邮件查看** - Web 界面支持查看收件箱和垃圾邮件
 - 🔍 **全屏查看** - 支持全屏模式查看邮件
 - 📤 **导出功能** - 支持按分组或全部导出邮箱账号信息
 - 🎨 **现代化 UI** - 四栏布局，账号列表、邮件列表、邮件详情分区清晰
@@ -152,7 +150,7 @@ docker-compose up -d
 - ✅ **批量选择** - 邮箱列表、邮件列表均支持全选当前列表与清空选择
 - 🗑️ **邮件删除** - 单封/批量永久删除邮件
 - 🔄 **API 优先级回退** - Graph API → IMAP(新) → IMAP(旧) 自动回退
-- 🔑 **对外 API** - 通过 API Key 直接获取邮件，无需登录，支持别名邮箱、聚合文件夹和多条件筛选
+- 🗂️ **账号池** - 集中筛选账号、查看权限健康状态、批量测试并复制账号资料
 
 #### 邮件转发
 - 📮 **按账号开启转发** - 每个账号单独控制是否参与自动转发
@@ -310,7 +308,6 @@ user@example.com----app-password----imap.example.com----993
 4. 在 Web 界面切换「收件箱」「垃圾邮件」查看邮件
 5. 滚动到邮件列表底部自动加载下一页（每页 20 封）
 6. 点击邮件查看详情，支持 HTML 渲染与全屏查看
-7. 需要查看 `deleteditems` 或 `all` 聚合结果时，建议使用对外 API 或内部 API
 
 ### 4. 别名管理
 
@@ -344,45 +341,11 @@ user@example.com----app-password----imap.example.com----993
 - 可以手动触发一次转发检查
 - 可以查看最近转发历史和失败记录
 
-### 6. 对外 API
+### 6. 账号池
 
-通过 API Key 直接获取邮件，无需登录 Web 界面。
+点击顶部「号池管理」会跳转到登录保护的独立子页面 `/account-pool`。页面拥有独立 HTML、CSS 和 JavaScript，提供库存状态统计、邮箱搜索、健康状态/邮箱后缀/分组筛选、字段排序、分页、全选筛选结果、单个/选中/全量权限测试、失败重试和测试历史，并可复制 `邮箱----密码` 或完整的 `邮箱----密码----client_id----refresh_token`。邮件首页不再加载账号池或旧 Token 管理界面资源。
 
-当前额外支持：
-
-- 使用主邮箱或别名邮箱取信
-- `folder=all` 一次聚合收件箱和垃圾邮件并按时间排序，`top` 按每个文件夹分别计算
-- 支持按主题、发件人、关键词筛选列表
-- 支持特殊字符别名，例如 `user+alias@example.com`
-- 默认 `top=1`
-
-**配置步骤：**
-1. 点击「⚙️ 设置」→ 在「对外 API Key」处点击「🔑 随机生成」→ 保存
-
-**调用示例：**
-```bash
-curl -H "X-API-Key: your-api-key" \
-  "http://localhost:5000/api/external/emails?email=user@outlook.com&folder=inbox"
-
-curl -H "X-API-Key: your-api-key" \
-  "http://localhost:5000/api/external/emails?email=alias@example.com&folder=all&top=10"
-
-curl -H "X-API-Key: your-api-key" \
-  "http://localhost:5000/api/external/emails?email=alias@example.com&folder=all&top=10&subject_contains=verify&from_contains=github&keyword=reset"
-
-curl -H "X-API-Key: your-api-key" \
-  "http://localhost:5000/api/external/emails?email=user%2Balias%40example.com"
-```
-
-如果邮箱或别名里带特殊字符：
-
-- `@` 可以直接传
-- `+` 建议编码成 `%2B`
-- `&` 必须编码成 `%26`
-
-如果你把外部邮箱 B 自动转发到本项目管理的邮箱 A，再把 B 配成 A 的别名，那么后续可以直接用 B 作为 `email` 参数调用对外 API。
-
-详细文档见 [API 文档](docs/api.md)。
+项目不再提供公开收件或验证码 API。WebUI 使用的内部接口要求登录，仅供当前管理界面使用。
 
 ## 📚 详细文档
 
@@ -390,7 +353,7 @@ curl -H "X-API-Key: your-api-key" \
 |------|------|
 | [🚀 部署指南](docs/deployment.md) | Docker、Docker Compose、Nginx/Caddy 部署、环境变量配置 |
 | [🔐 安全配置](docs/security.md) | XSS/CSRF 防护、数据加密、速率限制、审计日志 |
-| [📡 API 文档](docs/api.md) | 对外 API、内部 API 端点、代理配置 |
+| [📡 接口说明](docs/api.md) | WebUI 内部接口与公开 API 边界 |
 | [🛠️ 故障排查](docs/troubleshooting.md) | 常见问题、故障排查步骤 |
 | [📋 更新日志](CHANGELOG.md) | 版本更新历史 |
 | [🚢 发版说明](RELEASE.md) | 标准发版步骤、版本号规则、GitHub Release 说明 |

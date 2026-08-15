@@ -105,6 +105,13 @@ def index():
     return render_template('index.html')
 
 
+@app.route('/account-pool')
+@login_required
+def account_pool_page():
+    """独立账号池管理页"""
+    return render_template('account_pool.html')
+
+
 @app.route('/api/csrf-token', methods=['GET'])
 @csrf_exempt  # CSRF token获取接口排除CSRF保护
 def get_csrf_token():
@@ -542,34 +549,6 @@ def api_get_accounts():
     return jsonify({'success': True, 'accounts': safe_accounts})
 
 
-@app.route('/api/external/accounts', methods=['GET'])
-@csrf_exempt
-@api_key_required
-def api_external_get_accounts():
-    """对外 API：通过 API Key 获取邮箱账号列表"""
-    group_id = request.args.get('group_id', type=int)
-    accounts = load_accounts(group_id)
-    db = get_db()
-
-    safe_accounts = []
-    for acc in accounts:
-        last_refresh_log = get_latest_account_refresh_log(acc['id'], db)
-        safe_accounts.append(
-            serialize_account_summary(
-                acc,
-                last_refresh_log,
-                include_client_meta=False,
-                include_imap_meta=False
-            )
-        )
-
-    return jsonify({
-        'success': True,
-        'total': len(safe_accounts),
-        'accounts': safe_accounts
-    })
-
-
 # ==================== 标签 API ====================
 
 @app.route('/api/tags', methods=['GET'])
@@ -767,6 +746,14 @@ def api_search_accounts():
             'remark': acc['remark'] if acc['remark'] else '',
             'status': acc['status'] if acc['status'] else 'active',
             'account_type': acc.get('account_type', 'outlook'),
+            'mail_protocol': normalize_mail_protocol(acc.get('mail_protocol')),
+            'oauth_authority': normalize_oauth_authority(acc.get('oauth_authority')),
+            'health_status': acc.get('health_status', ''),
+            'health_detail': acc.get('health_detail', ''),
+            'graph_status': acc.get('graph_status', ''),
+            'imap_status': acc.get('imap_status', ''),
+            'permission_scopes': acc.get('permission_scopes', ''),
+            'last_protocol_test_at': acc.get('last_protocol_test_at', ''),
             'provider': acc.get('provider', 'outlook'),
             'forward_enabled': bool(acc.get('forward_enabled')),
             'created_at': acc['created_at'] if acc['created_at'] else '',
@@ -797,6 +784,14 @@ def api_get_account(account_id):
             'client_id': account['client_id'],
             'refresh_token': account['refresh_token'],
             'account_type': account.get('account_type', 'outlook'),
+            'mail_protocol': normalize_mail_protocol(account.get('mail_protocol')),
+            'oauth_authority': normalize_oauth_authority(account.get('oauth_authority')),
+            'health_status': account.get('health_status', ''),
+            'health_detail': account.get('health_detail', ''),
+            'graph_status': account.get('graph_status', ''),
+            'imap_status': account.get('imap_status', ''),
+            'permission_scopes': account.get('permission_scopes', ''),
+            'last_protocol_test_at': account.get('last_protocol_test_at', ''),
             'provider': account.get('provider', 'outlook'),
             'imap_host': account.get('imap_host', ''),
             'imap_port': account.get('imap_port', 993),
@@ -872,6 +867,8 @@ def api_add_account():
     group_id = data.get('group_id', 1)
     account_format = data.get('account_format', 'client_id_refresh_token')
     provider = data.get('provider', 'outlook')
+    mail_protocol = normalize_mail_protocol(data.get('mail_protocol'))
+    oauth_authority = normalize_oauth_authority(data.get('oauth_authority'))
     forward_enabled = bool(data.get('forward_enabled', False))
     imap_host = (data.get('imap_host', '') or '').strip()
     try:
@@ -905,7 +902,9 @@ def api_add_account():
                 parsed.get('imap_host', ''),
                 parsed.get('imap_port', 993),
                 parsed.get('imap_password', ''),
-                forward_enabled
+                forward_enabled,
+                mail_protocol,
+                oauth_authority
             ):
                 added += 1
     
@@ -932,6 +931,8 @@ def api_update_account(account_id):
     refresh_token = data.get('refresh_token', '')
     account_type = data.get('account_type', 'outlook')
     provider = data.get('provider', 'outlook')
+    mail_protocol = normalize_mail_protocol(data.get('mail_protocol'))
+    oauth_authority = normalize_oauth_authority(data.get('oauth_authority'))
     imap_host = (data.get('imap_host', '') or '').strip()
     imap_port = data.get('imap_port', 993)
     imap_password = data.get('imap_password', '')
@@ -975,7 +976,8 @@ def api_update_account(account_id):
 
     if update_account(
         account_id, email_addr, password, client_id, refresh_token, group_id, remark, status,
-        account_type, provider, imap_host, imap_port, imap_password, forward_enabled
+        account_type, provider, imap_host, imap_port, imap_password, forward_enabled,
+        mail_protocol, oauth_authority
     ):
         cleaned_aliases = get_account_aliases(account_id)
         if aliases_provided:

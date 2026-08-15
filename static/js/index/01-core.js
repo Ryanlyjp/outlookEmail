@@ -28,6 +28,46 @@
         let isTrustedMode = false; // 是否处于信任模式（不过滤 HTML）
         let oauthPreviewAccount = null;
         let selectedTagFilters = new Set();
+
+        function formatDateTime(dateStr) {
+            if (!dateStr) return '-';
+            let date;
+            if (dateStr instanceof Date) {
+                date = dateStr;
+            } else if (typeof dateStr === 'number' || /^\d+$/.test(String(dateStr))) {
+                const timestamp = Number(dateStr);
+                date = new Date(timestamp < 1000000000000 ? timestamp * 1000 : timestamp);
+            } else {
+                const value = String(dateStr);
+                date = new Date(!value.includes('Z') && !value.includes('+') && !value.includes('-', 10) ? value + 'Z' : value);
+            }
+            if (Number.isNaN(date.getTime())) return String(dateStr);
+            const diff = Date.now() - date.getTime();
+            const minutes = Math.floor(diff / 60000);
+            const hours = Math.floor(diff / 3600000);
+            const days = Math.floor(diff / 86400000);
+            if (minutes < 1) return '刚刚';
+            if (minutes < 60) return `${minutes}分钟前`;
+            if (hours < 24) return `${hours}小时前`;
+            if (days < 7) return `${days}天前`;
+            return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        }
+
+        function closeAllModals() {
+            document.querySelectorAll('.modal').forEach(modal => {
+                modal.classList.remove('show');
+                modal.style.display = 'none';
+                modal.setAttribute('aria-hidden', 'true');
+            });
+            const settingsPassword = document.getElementById('settingsPassword');
+            if (settingsPassword) settingsPassword.value = '';
+            const exportVerifyPassword = document.getElementById('exportVerifyPassword');
+            if (exportVerifyPassword) exportVerifyPassword.value = '';
+            if (typeof hideForwardingLogs === 'function') hideForwardingLogs();
+            if (typeof hideFailedForwardingLogs === 'function') hideFailedForwardingLogs();
+            closeFullscreenEmail();
+            updateModalBodyState();
+        }
         let tagFilterKeyword = '';
         let responsiveUiResizeTimer = null;
 

@@ -140,6 +140,16 @@ def api_validate_cron():
 def api_get_settings():
     """获取所有设置"""
     settings = get_all_settings()
+    for removed_key in (
+        'external_api_key',
+        'gptmail_api_key',
+        'duckmail_base_url',
+        'duckmail_api_key',
+        'cloudflare_worker_domain',
+        'cloudflare_email_domains',
+        'cloudflare_admin_password',
+    ):
+        settings.pop(removed_key, None)
     # 隐藏密码的部分字符
     if 'login_password' in settings:
         pwd = settings['login_password']
@@ -147,14 +157,6 @@ def api_get_settings():
             settings['login_password_masked'] = pwd[0] + '*' * (len(pwd) - 2) + pwd[-1]
         else:
             settings['login_password_masked'] = '*' * len(pwd)
-    # 返回解密后的对外 API Key
-    settings['external_api_key'] = get_external_api_key()
-    # 返回 DuckMail 设置
-    settings['duckmail_base_url'] = get_duckmail_base_url()
-    settings['duckmail_api_key'] = get_duckmail_api_key()
-    settings['cloudflare_worker_domain'] = get_cloudflare_worker_domain()
-    settings['cloudflare_email_domains'] = ', '.join(get_cloudflare_email_domains())
-    settings['cloudflare_admin_password'] = get_cloudflare_admin_password()
     settings['forward_channels'] = get_forward_channels()
     settings['forward_check_interval_minutes'] = get_setting('forward_check_interval_minutes', '5')
     settings['forward_email_window_minutes'] = get_setting('forward_email_window_minutes', '0')
@@ -194,15 +196,6 @@ def api_update_settings():
                     updated.append('登录密码')
                 else:
                     errors.append('更新登录密码失败')
-
-    # 更新 GPTMail API Key
-    if 'gptmail_api_key' in data:
-        new_api_key = data['gptmail_api_key'].strip()
-        if new_api_key:
-            if set_setting('gptmail_api_key', new_api_key):
-                updated.append('GPTMail API Key')
-            else:
-                errors.append('更新 GPTMail API Key 失败')
 
     # 更新刷新周期
     if 'refresh_interval_days' in data:
@@ -268,54 +261,6 @@ def api_update_settings():
                 errors.append('更新定时刷新开关失败')
         else:
             errors.append('定时刷新开关必须是 true 或 false')
-
-    # 更新对外 API Key
-    if 'external_api_key' in data:
-        new_ext_key = data['external_api_key'].strip()
-        if new_ext_key:
-            if set_setting('external_api_key', new_ext_key):
-                updated.append('对外 API Key')
-            else:
-                errors.append('更新对外 API Key 失败')
-        else:
-            if set_setting('external_api_key', ''):
-                updated.append('对外 API Key（已清空）')
-
-    # 更新 DuckMail 设置
-    if 'duckmail_base_url' in data:
-        new_url = data['duckmail_base_url'].strip()
-        if set_setting('duckmail_base_url', new_url):
-            updated.append('DuckMail API 地址')
-        else:
-            errors.append('更新 DuckMail API 地址失败')
-
-    if 'duckmail_api_key' in data:
-        new_dk_key = data['duckmail_api_key'].strip()
-        if set_setting('duckmail_api_key', new_dk_key):
-            updated.append('DuckMail API Key')
-        else:
-            errors.append('更新 DuckMail API Key 失败')
-
-    if 'cloudflare_worker_domain' in data:
-        new_domain = data['cloudflare_worker_domain'].strip()
-        if set_setting('cloudflare_worker_domain', new_domain):
-            updated.append('Cloudflare Worker 域名')
-        else:
-            errors.append('更新 Cloudflare Worker 域名失败')
-
-    if 'cloudflare_email_domains' in data:
-        new_domains = data['cloudflare_email_domains'].strip()
-        if set_setting('cloudflare_email_domains', new_domains):
-            updated.append('Cloudflare 邮箱域名')
-        else:
-            errors.append('更新 Cloudflare 邮箱域名失败')
-
-    if 'cloudflare_admin_password' in data:
-        new_password = data['cloudflare_admin_password'].strip()
-        if set_setting('cloudflare_admin_password', new_password):
-            updated.append('Cloudflare 管理密码')
-        else:
-            errors.append('更新 Cloudflare 管理密码失败')
 
     if 'forward_check_interval_minutes' in data:
         try:
@@ -441,96 +386,3 @@ def api_update_settings():
         return jsonify({'success': True, 'message': f'已更新：{", ".join(updated)}'})
     else:
         return jsonify({'success': False, 'error': '没有需要更新的设置'})
-
-
-# ==================== 对外 API ====================
-
-@app.route('/api/external/emails', methods=['GET'])
-@csrf_exempt
-@api_key_required
-def api_external_get_emails():
-    """对外 API：通过 API Key 获取邮件列表"""
-    email_addr = request.args.get('email', '').strip()
-    folder = request.args.get('folder', 'inbox').strip().lower()
-    skip = int(request.args.get('skip', 0))
-    top = int(request.args.get('top', 20))
-
-    if not email_addr:
-        return jsonify({'success': False, 'error': '缺少 email 参数'}), 400
-
-    # 验证 folder 参数
-    valid_folders = ['inbox', 'junkemail']
-    if folder not in valid_folders:
-        return jsonify({'success': False, 'error': f'folder 参数无效，支持: {", ".join(valid_folders)}'}), 400
-
-    # 限制分页大小
-    if top > 50:
-        top = 50
-
-    account = get_account_by_email(email_addr)
-    if not account:
-        return jsonify({'success': False, 'error': '邮箱账号不存在'}), 404
-
-    # 获取分组代理设置
-    proxy_url = get_account_proxy_url(account)
-    fallback_proxy_urls = get_account_proxy_failover_urls(account)
-
-    # 收集所有错误信息
-    all_errors = {}
-
-    # 1. 尝试 Graph API
-    graph_result = get_emails_graph(
-        account['client_id'],
-        account['refresh_token'],
-        folder,
-        skip,
-        top,
-        proxy_url,
-        fallback_proxy_urls,
-    )
-    if graph_result.get('success'):
-        emails = graph_result.get('emails', [])
-        formatted = [format_graph_email_item(e, folder) for e in emails]
-        return jsonify({
-            'success': True,
-            'emails': formatted,
-            'method': 'Graph API',
-            'has_more': len(formatted) >= top
-        })
-    else:
-        graph_error = graph_result.get('error')
-        all_errors['graph'] = graph_error
-        if isinstance(graph_error, dict) and graph_error.get('type') in ('ProxyError', 'ConnectionError'):
-            return jsonify({'success': False, 'error': '代理连接失败', 'details': all_errors})
-
-    # 2. 尝试新版 IMAP
-    imap_new_result = get_emails_imap_with_server(
-        account['email'], account['client_id'], account['refresh_token'],
-        folder, skip, top, IMAP_SERVER_NEW, proxy_url, fallback_proxy_urls
-    )
-    if imap_new_result.get('success'):
-        return jsonify({
-            'success': True,
-            'emails': imap_new_result.get('emails', []),
-            'method': 'IMAP (New)',
-            'has_more': False
-        })
-    else:
-        all_errors['imap_new'] = imap_new_result.get('error')
-
-    # 3. 尝试旧版 IMAP
-    imap_old_result = get_emails_imap_with_server(
-        account['email'], account['client_id'], account['refresh_token'],
-        folder, skip, top, IMAP_SERVER_OLD, proxy_url, fallback_proxy_urls
-    )
-    if imap_old_result.get('success'):
-        return jsonify({
-            'success': True,
-            'emails': imap_old_result.get('emails', []),
-            'method': 'IMAP (Old)',
-            'has_more': False
-        })
-    else:
-        all_errors['imap_old'] = imap_old_result.get('error')
-
-    return jsonify({'success': False, 'error': '无法获取邮件，所有方式均失败', 'details': all_errors})

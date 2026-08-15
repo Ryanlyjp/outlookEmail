@@ -415,6 +415,8 @@ def resolve_account_record(row: sqlite3.Row, matched_alias: str = '') -> Dict[st
     account['account_type'] = account.get('account_type') or get_provider_meta(
         account['provider'], account.get('email', '')
     ).get('account_type', 'outlook')
+    account['mail_protocol'] = normalize_mail_protocol(account.get('mail_protocol'))
+    account['oauth_authority'] = normalize_oauth_authority(account.get('oauth_authority'))
     account['aliases'] = get_account_aliases(account['id'])
     account['alias_count'] = len(account['aliases'])
     account['requested_email'] = matched_alias or account.get('email', '')
@@ -549,6 +551,14 @@ def serialize_account_summary(account: Dict[str, Any], last_refresh_log: Optiona
         'remark': account.get('remark', ''),
         'status': account.get('status', 'active'),
         'account_type': account.get('account_type', 'outlook'),
+        'mail_protocol': normalize_mail_protocol(account.get('mail_protocol')),
+        'oauth_authority': normalize_oauth_authority(account.get('oauth_authority')),
+        'health_status': account.get('health_status', ''),
+        'health_detail': account.get('health_detail', ''),
+        'graph_status': account.get('graph_status', ''),
+        'imap_status': account.get('imap_status', ''),
+        'permission_scopes': account.get('permission_scopes', ''),
+        'last_protocol_test_at': account.get('last_protocol_test_at', ''),
         'provider': account.get('provider', 'outlook'),
         'forward_enabled': bool(account.get('forward_enabled')),
         'last_refresh_at': account.get('last_refresh_at', ''),
@@ -571,7 +581,8 @@ def serialize_account_summary(account: Dict[str, Any], last_refresh_log: Optiona
 def add_account(email_addr: str, password: str, client_id: str = '', refresh_token: str = '',
                 group_id: int = 1, remark: str = '', account_type: str = 'outlook',
                 provider: str = 'outlook', imap_host: str = '', imap_port: int = 993,
-                imap_password: str = '', forward_enabled: bool = False) -> bool:
+                imap_password: str = '', forward_enabled: bool = False,
+                mail_protocol: str = 'auto', oauth_authority: str = 'common') -> bool:
     """添加邮箱账号"""
     db = get_db()
     try:
@@ -584,6 +595,8 @@ def add_account(email_addr: str, password: str, client_id: str = '', refresh_tok
         account_type = account_type or provider_meta.get('account_type', 'outlook')
         imap_host = imap_host or provider_meta.get('imap_host', '')
         imap_port = int(imap_port or provider_meta.get('imap_port', 993) or 993)
+        mail_protocol = normalize_mail_protocol(mail_protocol)
+        oauth_authority = normalize_oauth_authority(oauth_authority)
         encrypted_imap_password = encrypt_data(imap_password) if imap_password else imap_password
         provider_meta = get_provider_meta(provider, email_addr)
         provider = provider_meta['key']
@@ -595,13 +608,14 @@ def add_account(email_addr: str, password: str, client_id: str = '', refresh_tok
             INSERT INTO accounts (
                 email, password, client_id, refresh_token, group_id, remark,
                 account_type, provider, imap_host, imap_port, imap_password, forward_enabled,
-                forward_last_checked_at
+                forward_last_checked_at, mail_protocol, oauth_authority
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             email_addr, encrypted_password, client_id, encrypted_refresh_token, group_id, remark,
             account_type, provider, imap_host, imap_port, encrypted_imap_password, 1 if forward_enabled else 0,
-            datetime.now(timezone.utc).isoformat() if forward_enabled else None
+            datetime.now(timezone.utc).isoformat() if forward_enabled else None,
+            mail_protocol, oauth_authority
         ))
         db.commit()
         return True
@@ -613,7 +627,8 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
                    refresh_token: str, group_id: int, remark: str, status: str,
                    account_type: str = 'outlook', provider: str = 'outlook',
                    imap_host: str = '', imap_port: int = 993, imap_password: str = '',
-                   forward_enabled: bool = False) -> bool:
+                   forward_enabled: bool = False, mail_protocol: str = 'auto',
+                   oauth_authority: str = 'common') -> bool:
     """更新邮箱账号"""
     db = get_db()
     try:
@@ -621,6 +636,8 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
         encrypted_password = encrypt_data(password) if password else password
         encrypted_refresh_token = encrypt_data(refresh_token) if refresh_token else refresh_token
         encrypted_imap_password = encrypt_data(imap_password) if imap_password else imap_password
+        mail_protocol = normalize_mail_protocol(mail_protocol)
+        oauth_authority = normalize_oauth_authority(oauth_authority)
 
         current_account = db.execute(
             'SELECT forward_enabled, forward_last_checked_at FROM accounts WHERE id = ?',
@@ -636,12 +653,13 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
                 SET email = ?, password = ?, client_id = ?, refresh_token = ?,
                     group_id = ?, remark = ?, status = ?, account_type = ?, provider = ?,
                     imap_host = ?, imap_port = ?, imap_password = ?, forward_enabled = ?,
-                    forward_last_checked_at = ?, updated_at = CURRENT_TIMESTAMP
+                    forward_last_checked_at = ?, mail_protocol = ?, oauth_authority = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (
                 email_addr, encrypted_password, client_id, encrypted_refresh_token, group_id, remark, status,
                 account_type, provider, imap_host, imap_port, encrypted_imap_password, 1,
-                datetime.now(timezone.utc).isoformat(), account_id
+                datetime.now(timezone.utc).isoformat(), mail_protocol, oauth_authority, account_id
             ))
         else:
             db.execute('''
@@ -649,12 +667,12 @@ def update_account(account_id: int, email_addr: str, password: str, client_id: s
                 SET email = ?, password = ?, client_id = ?, refresh_token = ?,
                     group_id = ?, remark = ?, status = ?, account_type = ?, provider = ?,
                     imap_host = ?, imap_port = ?, imap_password = ?, forward_enabled = ?,
-                    updated_at = CURRENT_TIMESTAMP
+                    mail_protocol = ?, oauth_authority = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (
                 email_addr, encrypted_password, client_id, encrypted_refresh_token, group_id, remark, status,
                 account_type, provider, imap_host, imap_port, encrypted_imap_password, 1 if forward_enabled else 0,
-                account_id
+                mail_protocol, oauth_authority, account_id
             ))
         db.commit()
         return True
@@ -1100,6 +1118,8 @@ def parse_outlook_account_string(account_str: str, account_format: str = 'client
         'refresh_token': refresh_token,
         'provider': 'outlook',
         'account_type': 'outlook',
+        'mail_protocol': 'auto',
+        'oauth_authority': 'common',
         'imap_host': IMAP_SERVER_NEW,
         'imap_port': IMAP_PORT,
         'imap_password': '',

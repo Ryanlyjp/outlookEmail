@@ -347,60 +347,6 @@
             return Promise.resolve(fallbackCopy());
         }
 
-        async function extractLatestOtpForAccount(accountId, accountEmail, triggerButton = null) {
-            if (!accountId) {
-                showToast('账号信息无效，无法提取OTP', 'error');
-                return;
-            }
-
-            const button = triggerButton && triggerButton.tagName === 'BUTTON' ? triggerButton : null;
-            const originalText = button ? button.textContent : '';
-            if (button) {
-                button.disabled = true;
-                button.textContent = '提取中...';
-            }
-
-            try {
-                const response = await fetch(`/api/accounts/${accountId}/latest-verification-code`);
-                const data = await response.json();
-
-                if (!response.ok || !data.success || !data.data || !data.data.code) {
-                    const message = (data && data.error) ? data.error : '未找到验证码邮件';
-                    showToast(`提取OTP失败：${message}`, 'error');
-                    return;
-                }
-
-                const code = String(data.data.code || '').trim();
-                if (!code) {
-                    showToast('提取OTP失败：验证码为空', 'error');
-                    return;
-                }
-
-                const folder = String(data.data.selected_folder || '').trim().toLowerCase();
-                const folderNameMap = {
-                    inbox: '收件箱',
-                    junkemail: '垃圾邮件',
-                    deleteditems: '已删除邮件',
-                    all: '全部邮件'
-                };
-                const folderName = folderNameMap[folder] || '邮件';
-                const copied = await copyTextWithFallback(code);
-
-                if (copied) {
-                    showToast(`OTP ${code}（${folderName}）已复制`, 'success');
-                } else {
-                    showToast(`OTP ${code}（${folderName}）`, 'success');
-                }
-            } catch (error) {
-                showToast(`提取OTP失败：${accountEmail || '账号'} 网络请求异常`, 'error');
-            } finally {
-                if (button) {
-                    button.disabled = false;
-                    button.textContent = originalText || '提取OTP';
-                }
-            }
-        }
-
         // 删除账号（快捷方式）
         async function deleteAccount(accountId, email) {
             if (!(await showConfirmModal(`确定要删除账号 ${email} 吗？`, { title: '删除账号', confirmText: '确认删除' }))) {

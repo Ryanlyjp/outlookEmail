@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>账号池 - Outlook 邮件管理</title>
+    <link rel="icon" href="{{ url_for('favicon') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/account-pool.css') }}">
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand">OM</div>
+            <nav>
+                <a href="/">邮件管理</a>
+                <a class="active" href="/account-pool">账号池</a>
+                <a href="/logout">退出登录</a>
+            </nav>
+            <div class="sidebar-foot">筛选 → 测试 → 复制</div>
+        </aside>
+        <main>
+            <header class="page-head">
+                <div><h1>账号池</h1><p>账号库存、访问能力与资料复制集中管理。</p></div>
+                <a class="btn secondary" href="/">返回邮件管理</a>
+            </header>
+
+            <section class="stats-grid" id="poolStats">
+                <button data-filter="all"><span>账号总数</span><strong id="statTotal">0</strong></button>
+                <button data-filter="available" class="ok"><span>正常可用</span><strong id="statAvailable">0</strong></button>
+                <button data-filter="all_access" class="ok"><span>Graph + IMAP</span><strong id="statAll">0</strong></button>
+                <button data-filter="graph_only"><span>仅 Graph</span><strong id="statGraph">0</strong></button>
+                <button data-filter="imap_only"><span>仅 IMAP</span><strong id="statImap">0</strong></button>
+                <button data-filter="token_invalid" class="fail"><span>Token 失效</span><strong id="statInvalid">0</strong></button>
+                <button data-filter="unavailable" class="fail"><span>协议不可用</span><strong id="statUnavailable">0</strong></button>
+                <button data-filter="untested"><span>未测试</span><strong id="statUntested">0</strong></button>
+            </section>
+
+            <section class="job-card hidden" id="jobCard">
+                <div class="job-head"><strong id="jobTitle">权限测试</strong><span id="jobState"></span></div>
+                <div class="progress"><div id="jobBar"></div></div>
+                <div id="jobText"></div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div><h2>账号列表</h2><p>筛选、勾选并批量维护。账号资料仅在点击复制时读取。</p></div>
+                    <div class="toolbar">
+                        <input id="searchInput" type="search" placeholder="搜索邮箱、备注或分组">
+                        <select id="healthFilter"><option value="all">全部状态</option><option value="available">正常可用</option><option value="all_access">Graph + IMAP</option><option value="graph_only">仅 Graph</option><option value="imap_only">仅 IMAP</option><option value="token_invalid">Token 失效</option><option value="unavailable">协议不可用</option><option value="untested">未测试</option></select>
+                        <select id="domainFilter"><option value="">全部后缀</option><option value="outlook.com">@outlook.com</option><option value="hotmail.com">@hotmail.com</option><option value="live.com">@live.com</option><option value="__other__">其他后缀</option></select>
+                        <select id="groupFilter"><option value="">全部分组</option></select>
+                        <button class="btn secondary" id="reloadBtn">刷新</button>
+                    </div>
+                </div>
+                <div class="batch-bar">
+                    <strong id="selectedCount">已选 0</strong>
+                    <button class="btn ghost" id="selectFilteredBtn">全选筛选结果</button>
+                    <button class="btn ghost" id="clearSelectedBtn">清空选择</button>
+                    <button class="btn success" id="testSelectedBtn">测试选中</button>
+                    <button class="btn secondary" id="testAllBtn">测试全部</button>
+                    <button class="btn secondary" id="retryFailedBtn">重试失败</button>
+                    <button class="btn ghost" id="showFailedBtn">失败账号</button>
+                    <button class="btn ghost" id="showHistoryBtn">测试历史</button>
+                </div>
+                <div class="subpanel hidden" id="detailPanel"><div class="subpanel-head"><strong id="detailTitle"></strong><button class="btn ghost" id="closeDetailBtn">关闭</button></div><div id="detailContent"></div></div>
+                <div class="table-wrap">
+                    <table><thead><tr><th><input type="checkbox" id="selectPage"></th><th data-sort="id">ID ↕</th><th data-sort="email">Email ↕</th><th data-sort="health_status">健康 / 原因 ↕</th><th>协议</th><th>访问配置</th><th>分组</th><th data-sort="last_protocol_test_at">最近测试 ↕</th><th>操作</th></tr></thead><tbody id="accountTable"></tbody></table>
+                </div>
+                <footer class="table-footer"><span id="tableSummary"></span><label>每页 <select id="pageSize"><option>20</option><option selected>50</option><option>100</option><option>200</option></select></label><button class="btn ghost" id="prevPage">上一页</button><span id="pageInfo">1 / 1</span><button class="btn ghost" id="nextPage">下一页</button></footer>
+            </section>
+        </main>
+    </div>
+    <div class="toast hidden" id="toast"></div>
+    <script src="{{ url_for('static', filename='js/account-pool.js') }}"></script>
+</body>
+</html>

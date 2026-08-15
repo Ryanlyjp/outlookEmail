@@ -39,8 +39,8 @@
                         : '';
                     if (!isRefreshing) {
                         batchRefreshBtn.textContent = refreshableChecked.length > 0
-                            ? `刷新 Token${refreshableChecked.length !== checked.length ? ` (${refreshableChecked.length})` : ''}`
-                            : '刷新 Token';
+                            ? `权限测试${refreshableChecked.length !== checked.length ? ` (${refreshableChecked.length})` : ''}`
+                            : '权限测试';
                     }
                 }
                 if (batchEnableForwardingBtn) {
@@ -78,7 +78,7 @@
                 if (batchRefreshBtn) {
                     batchRefreshBtn.disabled = false;
                     batchRefreshBtn.dataset.loading = 'false';
-                    batchRefreshBtn.textContent = '刷新 Token';
+                    batchRefreshBtn.textContent = '权限测试';
                     batchRefreshBtn.title = '';
                 }
                 if (batchEnableForwardingBtn) {
@@ -137,7 +137,7 @@
                 showToast('所选账号中没有可刷新的 Outlook 账号', 'error');
                 return;
             }
-            if (!(await showConfirmModal(`确定要刷新所选 ${accountIds.length} 个邮箱的 Token 吗？`, { title: '批量刷新 Token', confirmText: '确认刷新', danger: false }))) {
+            if (!(await showConfirmModal(`确定要测试所选 ${accountIds.length} 个邮箱的 Graph/IMAP 权限吗？`, { title: '批量权限测试', confirmText: '开始测试', danger: false }))) {
                 return;
             }
 
@@ -163,13 +163,6 @@
                     `批量刷新完成：成功 ${data.success_count}，失败 ${data.failed_count}，跳过 ${data.skipped_count}`,
                     toastType
                 );
-
-                if (data.failed_count > 0) {
-                    await showRefreshModal(false);
-                    showFailedListFromData(data.failed_list || []);
-                } else {
-                    loadRefreshStats();
-                }
 
                 clearAccountSelection();
                 await refreshVisibleAccountList(true);

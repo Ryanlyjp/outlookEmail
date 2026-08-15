@@ -188,11 +188,12 @@ def proxy_socket_context(proxy_url: str):
 
 
 def get_access_token_graph_result(client_id: str, refresh_token: str, proxy_url: str = None,
-                                  fallback_proxy_urls: Optional[List[str]] = None) -> Dict[str, Any]:
+                                  fallback_proxy_urls: Optional[List[str]] = None,
+                                  oauth_authority: str = 'common') -> Dict[str, Any]:
     """获取 Graph API access_token（包含错误详情）"""
     try:
         res = post_with_proxy_fallback(
-            TOKEN_URL_GRAPH,
+            get_oauth_token_url(oauth_authority),
             data={
                 "client_id": client_id,
                 "grant_type": "refresh_token",
@@ -231,7 +232,11 @@ def get_access_token_graph_result(client_id: str, refresh_token: str, proxy_url:
                 )
             }
 
-        return {"success": True, "access_token": access_token}
+        return {
+            "success": True,
+            "access_token": access_token,
+            "scope": payload.get("scope", ""),
+        }
     except Exception as exc:
         return {
             "success": False,
@@ -246,9 +251,10 @@ def get_access_token_graph_result(client_id: str, refresh_token: str, proxy_url:
 
 
 def get_access_token_graph(client_id: str, refresh_token: str, proxy_url: str = None,
-                           fallback_proxy_urls: Optional[List[str]] = None) -> Optional[str]:
+                           fallback_proxy_urls: Optional[List[str]] = None,
+                           oauth_authority: str = 'common') -> Optional[str]:
     """获取 Graph API access_token"""
-    result = get_access_token_graph_result(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    result = get_access_token_graph_result(client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority)
     if result.get("success"):
         return result.get("access_token")
     return None
@@ -256,9 +262,10 @@ def get_access_token_graph(client_id: str, refresh_token: str, proxy_url: str = 
 
 def get_emails_graph(client_id: str, refresh_token: str, folder: str = 'inbox', skip: int = 0,
                      top: int = 20, proxy_url: str = None,
-                     fallback_proxy_urls: Optional[List[str]] = None) -> Dict[str, Any]:
+                     fallback_proxy_urls: Optional[List[str]] = None,
+                     oauth_authority: str = 'common') -> Dict[str, Any]:
     """使用 Graph API 获取邮件列表（支持分页和文件夹选择）"""
-    token_result = get_access_token_graph_result(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    token_result = get_access_token_graph_result(client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority)
     if not token_result.get("success"):
         return {"success": False, "error": token_result.get("error")}
 
@@ -324,9 +331,10 @@ def get_emails_graph(client_id: str, refresh_token: str, folder: str = 'inbox', 
 
 
 def get_email_detail_graph(client_id: str, refresh_token: str, message_id: str, proxy_url: str = None,
-                           fallback_proxy_urls: Optional[List[str]] = None) -> Optional[Dict]:
+                           fallback_proxy_urls: Optional[List[str]] = None,
+                           oauth_authority: str = 'common') -> Optional[Dict]:
     """使用 Graph API 获取邮件详情"""
-    access_token = get_access_token_graph(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    access_token = get_access_token_graph(client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority)
     if not access_token:
         return None
     
@@ -360,11 +368,12 @@ def get_email_detail_graph(client_id: str, refresh_token: str, message_id: str, 
 # ==================== IMAP 方式 ====================
 
 def get_access_token_imap_result(client_id: str, refresh_token: str, proxy_url: str = None,
-                                 fallback_proxy_urls: Optional[List[str]] = None) -> Dict[str, Any]:
+                                 fallback_proxy_urls: Optional[List[str]] = None,
+                                 oauth_authority: str = 'consumers') -> Dict[str, Any]:
     """获取 IMAP access_token（包含错误详情）"""
     try:
         res = post_with_proxy_fallback(
-            TOKEN_URL_IMAP,
+            get_oauth_token_url(oauth_authority),
             data={
                 "client_id": client_id,
                 "grant_type": "refresh_token",
@@ -403,7 +412,11 @@ def get_access_token_imap_result(client_id: str, refresh_token: str, proxy_url: 
                 )
             }
 
-        return {"success": True, "access_token": access_token}
+        return {
+            "success": True,
+            "access_token": access_token,
+            "scope": payload.get("scope", ""),
+        }
     except Exception as exc:
         return {
             "success": False,
@@ -418,9 +431,10 @@ def get_access_token_imap_result(client_id: str, refresh_token: str, proxy_url: 
 
 
 def get_access_token_imap(client_id: str, refresh_token: str, proxy_url: str = None,
-                          fallback_proxy_urls: Optional[List[str]] = None) -> Optional[str]:
+                          fallback_proxy_urls: Optional[List[str]] = None,
+                          oauth_authority: str = 'consumers') -> Optional[str]:
     """获取 IMAP access_token"""
-    result = get_access_token_imap_result(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    result = get_access_token_imap_result(client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority)
     if result.get("success"):
         return result.get("access_token")
     return None
@@ -428,7 +442,8 @@ def get_access_token_imap(client_id: str, refresh_token: str, proxy_url: str = N
 
 def get_emails_imap(account: str, client_id: str, refresh_token: str, folder: str = 'inbox', skip: int = 0,
                     top: int = 20, proxy_url: str = None,
-                    fallback_proxy_urls: Optional[List[str]] = None) -> Dict[str, Any]:
+                    fallback_proxy_urls: Optional[List[str]] = None,
+                    oauth_authority: str = 'consumers') -> Dict[str, Any]:
     """使用 IMAP 获取邮件列表（支持分页和文件夹选择）- 默认使用新版服务器"""
     return get_emails_imap_with_server(
         account,
@@ -440,17 +455,19 @@ def get_emails_imap(account: str, client_id: str, refresh_token: str, folder: st
         IMAP_SERVER_NEW,
         proxy_url,
         fallback_proxy_urls,
+        oauth_authority,
     )
 
 
-def get_emails_imap_with_server(account: str, client_id: str, refresh_token: str, folder: str = 'inbox', skip: int = 0, top: int = 20, server: str = IMAP_SERVER_NEW, proxy_url: str = None) -> Dict[str, Any]:
+def get_emails_imap_with_server(account: str, client_id: str, refresh_token: str, folder: str = 'inbox', skip: int = 0, top: int = 20, server: str = IMAP_SERVER_NEW, proxy_url: str = None, oauth_authority: str = 'consumers') -> Dict[str, Any]:
     """使用 IMAP 获取邮件列表（支持分页、文件夹选择和服务器选择）"""
 def get_emails_imap_with_server(account: str, client_id: str, refresh_token: str, folder: str = 'inbox',
                                 skip: int = 0, top: int = 20, server: str = IMAP_SERVER_NEW,
                                 proxy_url: str = None,
-                                fallback_proxy_urls: Optional[List[str]] = None) -> Dict[str, Any]:
+                                fallback_proxy_urls: Optional[List[str]] = None,
+                                oauth_authority: str = 'consumers') -> Dict[str, Any]:
     """使用 IMAP 获取邮件列表（支持分页、文件夹选择和服务器选择）"""
-    token_result = get_access_token_imap_result(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    token_result = get_access_token_imap_result(client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority)
     if not token_result.get("success"):
         return {"success": False, "error": token_result.get("error")}
 
@@ -544,9 +561,10 @@ def get_emails_imap_with_server(account: str, client_id: str, refresh_token: str
 
 def get_email_detail_imap(account: str, client_id: str, refresh_token: str, message_id: str,
                           folder: str = 'inbox', proxy_url: str = None,
-                          fallback_proxy_urls: Optional[List[str]] = None) -> Optional[Dict]:
+                          fallback_proxy_urls: Optional[List[str]] = None,
+                          oauth_authority: str = 'consumers') -> Optional[Dict]:
     """使用 IMAP 获取邮件详情"""
-    access_token = get_access_token_imap(client_id, refresh_token, proxy_url, fallback_proxy_urls)
+    access_token = get_access_token_imap(client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority)
     if not access_token:
         return None
 
@@ -1101,27 +1119,6 @@ def login_required(f):
             if request.is_json or request.path.startswith('/api/'):
                 return jsonify({'success': False, 'error': '请先登录', 'need_login': True}), 401
             return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-
-def api_key_required(f):
-    """API Key 验证装饰器（用于对外 API）"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # 从 Header 或查询参数获取 API Key
-        api_key = request.headers.get('X-API-Key') or request.args.get('api_key') or request.args.get('apikey')
-        if not api_key:
-            return jsonify({'success': False, 'error': '缺少 API Key，请通过 Header X-API-Key 或查询参数 api_key 提供'}), 401
-
-        # 验证 API Key
-        stored_key = get_external_api_key()
-        if not stored_key:
-            return jsonify({'success': False, 'error': '未配置对外 API Key，请在系统设置中配置'}), 403
-
-        if api_key != stored_key:
-            return jsonify({'success': False, 'error': 'API Key 无效'}), 401
-
         return f(*args, **kwargs)
     return decorated_function
 

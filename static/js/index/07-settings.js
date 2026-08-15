@@ -18,15 +18,6 @@
             }
         }
 
-        // 生成随机对外 API Key
-        function generateExternalApiKey() {
-            const array = new Uint8Array(16);
-            crypto.getRandomValues(array);
-            const key = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
-            document.getElementById('settingsExternalApiKey').value = key;
-            showToast('已生成随机 API Key，请保存设置', 'success');
-        }
-
         // 切换刷新策略
         function toggleRefreshStrategy() {
             const strategy = document.querySelector('input[name="refreshStrategy"]:checked').value;
@@ -108,6 +99,8 @@
             if (document.getElementById('importProviderSelect')) {
                 document.getElementById('importProviderSelect').value = 'outlook';
             }
+            document.getElementById('importMailProtocol').value = 'auto';
+            document.getElementById('importOauthAuthority').value = 'common';
             if (document.getElementById('importImapHost')) {
                 document.getElementById('importImapHost').value = '';
             }
@@ -158,6 +151,8 @@
                             provider,
                             imap_host: imapHost,
                             imap_port: Number.isFinite(imapPort) ? imapPort : 993,
+                            mail_protocol: document.getElementById('importMailProtocol')?.value || 'auto',
+                            oauth_authority: document.getElementById('importOauthAuthority')?.value || 'common',
                             forward_enabled: forwardEnabled
                         })
                     });
@@ -209,6 +204,17 @@
                     if (document.getElementById('editProviderSelect')) {
                         document.getElementById('editProviderSelect').value = acc.provider || (acc.account_type === 'imap' ? 'custom' : 'outlook');
                     }
+                    document.getElementById('editMailProtocol').value = acc.mail_protocol || 'auto';
+                    document.getElementById('editOauthAuthority').value = acc.oauth_authority || 'common';
+                    const permissionStatus = document.getElementById('editPermissionStatus');
+                    if (permissionStatus) {
+                        const graph = acc.graph_status || '未测';
+                        const imap = acc.imap_status || '未测';
+                        const health = acc.health_status || '未测';
+                        const testedAt = acc.last_protocol_test_at ? ` · ${acc.last_protocol_test_at}` : '';
+                        permissionStatus.textContent = `综合：${health} · Graph：${graph} · IMAP：${imap}${testedAt}`;
+                        permissionStatus.title = acc.health_detail || acc.permission_scopes || '';
+                    }
                     updateEditAccountFields();
                     setModalVisible('editAccountModal', true);
                 }
@@ -232,6 +238,8 @@
                 refresh_token: document.getElementById('editRefreshToken').value.trim(),
                 account_type: isOutlook ? 'outlook' : 'imap',
                 provider,
+                mail_protocol: document.getElementById('editMailProtocol')?.value || 'auto',
+                oauth_authority: document.getElementById('editOauthAuthority')?.value || 'common',
                 imap_host: document.getElementById('editImapHost')?.value.trim() || '',
                 imap_port: Number.isFinite(imapPort) ? imapPort : 993,
                 imap_password: document.getElementById('editImapPassword')?.value || '',
@@ -295,13 +303,6 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    document.getElementById('settingsApiKey').value = data.settings.gptmail_api_key || '';
-                    document.getElementById('settingsExternalApiKey').value = data.settings.external_api_key || '';
-                    document.getElementById('settingsDuckmailBaseUrl').value = data.settings.duckmail_base_url || '';
-                    document.getElementById('settingsDuckmailApiKey').value = data.settings.duckmail_api_key || '';
-                    document.getElementById('settingsCloudflareWorkerDomain').value = data.settings.cloudflare_worker_domain || '';
-                    document.getElementById('settingsCloudflareEmailDomains').value = data.settings.cloudflare_email_domains || '';
-                    document.getElementById('settingsCloudflareAdminPassword').value = data.settings.cloudflare_admin_password || '';
                     document.getElementById('settingsPassword').value = '';
 
                     document.getElementById('refreshIntervalDays').value = data.settings.refresh_interval_days || '30';
@@ -337,8 +338,6 @@
         async function saveSettings() {
             ensureForwardingSettingsUI();
             const password = document.getElementById('settingsPassword').value;
-            const apiKey = document.getElementById('settingsApiKey').value.trim();
-            const externalApiKey = document.getElementById('settingsExternalApiKey').value.trim();
             const refreshDays = document.getElementById('refreshIntervalDays').value;
             const refreshDelay = document.getElementById('refreshDelaySeconds').value;
             const refreshCron = document.getElementById('refreshCron').value.trim();
@@ -351,13 +350,6 @@
                 settings.login_password = password;
             }
 
-            settings.gptmail_api_key = apiKey;
-            settings.external_api_key = externalApiKey;
-            settings.duckmail_base_url = document.getElementById('settingsDuckmailBaseUrl').value.trim();
-            settings.duckmail_api_key = document.getElementById('settingsDuckmailApiKey').value.trim();
-            settings.cloudflare_worker_domain = document.getElementById('settingsCloudflareWorkerDomain').value.trim();
-            settings.cloudflare_email_domains = document.getElementById('settingsCloudflareEmailDomains').value.trim();
-            settings.cloudflare_admin_password = document.getElementById('settingsCloudflareAdminPassword').value.trim();
 
             const days = parseInt(refreshDays, 10);
             const delay = parseInt(refreshDelay, 10);
