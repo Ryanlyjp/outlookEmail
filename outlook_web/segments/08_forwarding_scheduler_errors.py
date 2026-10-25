@@ -104,6 +104,61 @@ def stringify_forward_error(error: Any) -> str:
     return sanitize_error_details(str(error))[:500]
 
 
+def is_expired_token_error(error: Any) -> bool:
+    """Match only explicit OAuth grant expiry/revocation responses."""
+    if not error:
+        return False
+    if isinstance(error, dict):
+        error_code = str(error.get('code') or '')
+        if error_code not in ('GRAPH_TOKEN_FAILED', 'IMAP_TOKEN_FAILED'):
+            return any(is_expired_token_error(value) for value in error.values())
+        text = ' '.join(str(error.get(key) or '') for key in ('message', 'details')).lower()
+    elif isinstance(error, (list, tuple)):
+        return any(is_expired_token_error(value) for value in error)
+    else:
+        text = str(error).lower()
+        if 'graph_token_failed' not in text and 'imap_token_failed' not in text:
+            return False
+    return any(marker in text for marker in (
+        'refresh token has expired',
+        'refresh token is expired',
+        'refresh token was revoked',
+        'refresh token has been revoked',
+        'grant is expired',
+        'grant has expired',
+        'grant was revoked',
+    ))
+
+
+def is_account_token_invalid_result(account: Dict[str, Any], result: Dict[str, Any]) -> bool:
+    if account.get('account_type') == 'imap':
+        return False
+
+    details = result.get('details')
+    if not isinstance(details, dict):
+        return False
+
+    protocol = normalize_mail_protocol(account.get('mail_protocol'))
+    if protocol == 'graph':
+        return is_expired_token_error(details.get('graph'))
+    if protocol == 'imap_oauth':
+        return all(is_expired_token_error(details.get(key)) for key in ('imap_new', 'imap_old'))
+    return all(is_expired_token_error(details.get(key)) for key in ('graph', 'imap_new', 'imap_old'))
+
+
+def mark_account_token_invalid(conn, account_id: int, error: Any) -> None:
+    conn.execute(
+        '''
+        UPDATE accounts
+        SET health_status = 'token_invalid', health_detail = ?,
+            graph_status = 'fail', imap_status = 'fail',
+            last_protocol_test_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        ''',
+        (stringify_forward_error(error), account_id),
+    )
+
+
 def send_forward_email(subject: str, body_text: str, body_html: str = '') -> bool:
     recipient = get_setting('email_forward_recipient', '').strip()
     host = get_setting('smtp_host', '').strip()
@@ -236,14 +291,20 @@ def fetch_forward_candidates(account: Dict[str, Any], top: int = 20, folder: str
     fallback_proxy_urls = get_account_proxy_failover_urls(account)
     result = fetch_account_folder_emails(account, folder, 0, top, proxy_url, fallback_proxy_urls)
     if not result.get('success'):
+        token_invalid = is_account_token_invalid_result(account, result)
+        error_source = result.get('details') if token_invalid else result.get('error') or result.get('details')
         return {
             'success': False,
             'emails': [],
-            'error': stringify_forward_error(result.get('error') or result.get('details') or '获取邮件失败'),
+            'error': stringify_forward_error(error_source or '获取邮件失败'),
+            'token_invalid': token_invalid,
         }
     return {
         'success': True,
-        'emails': result.get('emails', []),
+        'emails': [
+            dict(item, mail_method=item.get('mail_method') or result.get('method', ''))
+            for item in result.get('emails', [])
+        ],
         'error': '',
     }
 
@@ -269,48 +330,16 @@ def build_forward_cursor_reset(account: Dict[str, Any], mode: str = 'window', lo
     return None, '当前未限制转发时间范围，已清空转发游标并准备重扫最近邮件', lookback_minutes
 
 
-def fetch_forward_detail(account: Dict[str, Any], message_id: str, folder: str = 'inbox') -> Optional[Dict[str, Any]]:
-    proxy_url = get_account_proxy_url(account)
-    fallback_proxy_urls = get_account_proxy_failover_urls(account)
-    if account.get('account_type') == 'imap':
-        result = get_email_detail_imap_generic_result(
-            account['email'],
-            account.get('imap_password', ''),
-            account.get('imap_host', ''),
-            account.get('imap_port', 993),
-            message_id,
-            folder,
-            account.get('provider', 'custom'),
-            proxy_url
-        )
-        return result.get('email') if result.get('success') else None
-
-    detail = get_email_detail_graph(
-        account.get('client_id', ''),
-        account.get('refresh_token', ''),
-        message_id,
-        proxy_url,
-        fallback_proxy_urls,
-    )
-    if not detail:
-        return None
-    return {
-        'id': detail.get('id'),
-        'subject': detail.get('subject', '无主题'),
-        'from': detail.get('from', {}).get('emailAddress', {}).get('address', '未知'),
-        'to': ', '.join([r.get('emailAddress', {}).get('address', '') for r in detail.get('toRecipients', [])]),
-        'cc': ', '.join([r.get('emailAddress', {}).get('address', '') for r in detail.get('ccRecipients', [])]),
-        'date': detail.get('receivedDateTime', ''),
-        'body': detail.get('body', {}).get('content', ''),
-        'body_type': detail.get('body', {}).get('contentType', 'text').lower()
-    }
+def fetch_forward_detail(account: Dict[str, Any], message_id: str, folder: str = 'inbox',
+                         mail_method: str = 'graph') -> Optional[Dict[str, Any]]:
+    return fetch_account_email_detail(account, message_id, folder, mail_method)
 
 
 def process_forwarding_job():
     with app.app_context():
-        conn = sqlite3.connect(DATABASE)
-        conn.execute('PRAGMA foreign_keys = ON')
-        conn.row_factory = sqlite3.Row
+        # Forwarding performs slow external requests between database writes.
+        # Autocommit prevents those requests from extending a SQLite write lock.
+        conn = connect_database(autocommit=True)
         try:
             forward_channels = set(get_forward_channels())
             email_enabled = FORWARD_CHANNEL_SMTP_SETTING in forward_channels and bool(
@@ -330,7 +359,9 @@ def process_forwarding_job():
                 return
 
             accounts = conn.execute(
-                "SELECT * FROM accounts WHERE status = 'active' AND forward_enabled = 1"
+                """SELECT * FROM accounts
+                   WHERE status = 'active' AND forward_enabled = 1
+                     AND COALESCE(health_status, '') <> 'token_invalid'"""
             ).fetchall()
             print(
                 f"[forward] start job: accounts={len(accounts)} email_enabled={email_enabled} telegram_enabled={telegram_enabled}"
@@ -359,6 +390,7 @@ def process_forwarding_job():
                     folders_to_scan.append('junkemail')
                 emails = []
                 had_processing_failure = False
+                token_invalid = False
                 for folder_name in folders_to_scan:
                     folder_result = fetch_forward_candidates(account, 20, folder_name)
                     if not folder_result.get('success'):
@@ -379,8 +411,18 @@ def process_forwarding_job():
                             folder_name,
                             folder_result.get('error') or 'unknown',
                         )
+                        if folder_result.get('token_invalid'):
+                            mark_account_token_invalid(conn, account['id'], folder_result.get('error'))
+                            token_invalid = True
+                            app.logger.warning(
+                                '[forward] stop retrying invalid token: account=%s',
+                                account.get('email', ''),
+                            )
+                            break
                         continue
                     emails.extend(folder_result.get('emails', []))
+                if token_invalid:
+                    continue
                 recent_emails = []
                 skipped_before_cursor = 0
                 email_success_count = 0
@@ -420,7 +462,12 @@ def process_forwarding_job():
                 recent_emails.sort(key=lambda pair: pair[0] or datetime.min)
 
                 for item_time, item in recent_emails:
-                    detail = fetch_forward_detail(account, item.get('id'), item.get('folder', 'inbox'))
+                    detail = fetch_forward_detail(
+                        account,
+                        item.get('id'),
+                        item.get('folder', 'inbox'),
+                        item.get('mail_method', 'graph'),
+                    )
                     if not detail:
                         had_processing_failure = True
                         log_forwarding_result(
@@ -819,9 +866,7 @@ def scheduled_refresh_task():
 
             refresh_interval_days = int(get_setting('refresh_interval_days', '30'))
 
-        conn = sqlite3.connect(DATABASE)
-        conn.execute('PRAGMA foreign_keys = ON')
-        conn.row_factory = sqlite3.Row
+        conn = connect_database()
         cursor = conn.execute('''
             SELECT MAX(created_at) as last_refresh
             FROM account_refresh_logs
@@ -852,9 +897,7 @@ ensure_scheduler_started()
 
 def trigger_refresh_internal():
     """内部触发刷新（不通过 HTTP）"""
-    conn = sqlite3.connect(DATABASE)
-    conn.execute('PRAGMA foreign_keys = ON')
-    conn.row_factory = sqlite3.Row
+    conn = connect_database()
 
     try:
         # 获取刷新间隔配置

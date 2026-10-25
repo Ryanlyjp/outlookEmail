@@ -104,13 +104,17 @@ sudo systemctl reload nginx
 
 **错误信息：** `sqlite3.OperationalError: database is locked`
 
+当前版本为所有 SQLite 连接设置 30 秒锁等待，并让后台邮件转发任务的数据库写入自动提交，避免在等待 Graph、IMAP、SMTP 或 Telegram 网络响应时持续持有写锁。
+
+如果升级后仍出现该错误，先确认是否有应用容器之外的进程正在直接写数据库：
+
 ```bash
-docker-compose restart
 lsof data/outlook_accounts.db
-cp data/outlook_accounts.db data/outlook_accounts.db.backup
-docker-compose down
-docker-compose up -d
+docker logs outlook-mail-reader 2>&1 | grep -C 8 "database is locked"
+sqlite3 data/outlook_accounts.db "PRAGMA integrity_check;"
 ```
+
+重启只能释放当前锁，不能修复长事务；不要在容器运行时使用其他脚本批量修改同一个数据库。
 
 ---
 

@@ -1,10 +1,11 @@
 import importlib
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 
 os.environ.setdefault('SECRET_KEY', 'test-secret-key')
@@ -221,6 +222,227 @@ class ImapFolderResolutionTests(unittest.TestCase):
         self.assertTrue(result['success'])
         self.assertEqual([email['folder'] for email in result['emails']], ['junkemail', 'inbox'])
         self.assertEqual(result['method'], 'method-inbox / method-junkemail')
+
+
+class DatabaseConcurrencyTests(unittest.TestCase):
+    def test_autocommit_connection_releases_write_lock_immediately(self):
+        with tempfile.TemporaryDirectory(prefix='outlookEmail-lock-test-') as temp_dir:
+            database_path = os.path.join(temp_dir, 'lock-test.db')
+            with patch.object(web_outlook_app, 'DATABASE', database_path):
+                setup = web_outlook_app.connect_database()
+                setup.execute('CREATE TABLE events (value TEXT NOT NULL)')
+                setup.commit()
+                setup.close()
+
+                background = web_outlook_app.connect_database(autocommit=True)
+                foreground = web_outlook_app.connect_database()
+                try:
+                    background.execute("INSERT INTO events (value) VALUES ('background')")
+                    foreground.execute("INSERT INTO events (value) VALUES ('foreground')")
+                    foreground.commit()
+
+                    self.assertEqual(
+                        foreground.execute('SELECT COUNT(*) FROM events').fetchone()[0],
+                        2,
+                    )
+                    self.assertEqual(
+                        foreground.execute('PRAGMA busy_timeout').fetchone()[0],
+                        web_outlook_app.SQLITE_BUSY_TIMEOUT_MS,
+                    )
+                finally:
+                    foreground.close()
+                    background.close()
+
+    def test_forwarding_job_uses_autocommit_connection(self):
+        connection = MagicMock(spec=sqlite3.Connection)
+        with patch.object(web_outlook_app, 'connect_database', return_value=connection) as connect:
+            with patch.object(web_outlook_app, 'get_forward_channels', return_value=[]):
+                web_outlook_app.process_forwarding_job()
+
+        self.assertIn(call(autocommit=True), connect.call_args_list)
+        connection.close.assert_called()
+
+
+class ForwardingProtocolTests(unittest.TestCase):
+    def setUp(self):
+        self.account = {
+            'id': 7,
+            'email': 'user@outlook.com',
+            'client_id': 'client-id',
+            'refresh_token': 'refresh-token',
+            'account_type': 'outlook',
+            'mail_protocol': 'auto',
+            'oauth_authority': 'common',
+        }
+
+    def test_imap_list_result_uses_same_imap_server_for_detail(self):
+        with patch.object(web_outlook_app, 'get_account_proxy_url', return_value=''), \
+                patch.object(web_outlook_app, 'get_account_proxy_failover_urls', return_value=[]), \
+                patch.object(web_outlook_app, 'get_email_detail_graph') as graph, \
+                patch.object(web_outlook_app, 'get_email_detail_imap', return_value={'id': '42'}) as imap:
+            detail = web_outlook_app.fetch_forward_detail(
+                self.account, '42', 'inbox', 'imap_old'
+            )
+
+        self.assertEqual(detail, {'id': '42'})
+        graph.assert_not_called()
+        self.assertEqual(imap.call_args.args[-1], web_outlook_app.IMAP_SERVER_OLD)
+
+    def test_graph_list_result_uses_graph_for_detail(self):
+        graph_detail = {
+            'id': 'graph-id',
+            'subject': 'Subject',
+            'from': {'emailAddress': {'address': 'sender@example.com'}},
+            'toRecipients': [],
+            'ccRecipients': [],
+            'body': {'content': 'Body', 'contentType': 'text'},
+        }
+        with patch.object(web_outlook_app, 'get_account_proxy_url', return_value=''), \
+                patch.object(web_outlook_app, 'get_account_proxy_failover_urls', return_value=[]), \
+                patch.object(web_outlook_app, 'get_email_detail_graph', return_value=graph_detail) as graph, \
+                patch.object(web_outlook_app, 'get_email_detail_imap') as imap:
+            detail = web_outlook_app.fetch_forward_detail(
+                self.account, 'graph-id', 'inbox', 'graph'
+            )
+
+        self.assertEqual(detail['id'], 'graph-id')
+        graph.assert_called_once()
+        imap.assert_not_called()
+
+    def test_only_explicit_expired_grant_is_classified_invalid(self):
+        expired = {
+            'code': 'GRAPH_TOKEN_FAILED',
+            'details': '{"error":"invalid_grant","error_description":"refresh token has expired"}',
+        }
+        network = {
+            'code': 'GRAPH_TOKEN_EXCEPTION',
+            'type': 'ReadTimeout',
+            'details': 'HTTPSConnectionPool timed out',
+        }
+        unauthorized_scope = {
+            'code': 'IMAP_TOKEN_FAILED',
+            'details': (
+                '{"error":"invalid_grant","error_description":'
+                '"one or more scopes requested are unauthorized or expired"}'
+            ),
+        }
+
+        self.assertTrue(web_outlook_app.is_expired_token_error(expired))
+        self.assertFalse(web_outlook_app.is_expired_token_error(network))
+        self.assertFalse(web_outlook_app.is_expired_token_error(unauthorized_scope))
+
+    def test_expired_grant_marks_account_and_network_error_does_not(self):
+        expired = {
+            'code': 'IMAP_TOKEN_FAILED',
+            'details': '{"error":"invalid_grant","error_description":"grant was revoked"}',
+        }
+        with patch.object(web_outlook_app, 'fetch_account_folder_emails', return_value={
+            'success': False,
+            'error': '无法获取邮件，所有方式均失败',
+            'details': {
+                'graph': {
+                    'code': 'GRAPH_TOKEN_FAILED',
+                    'details': '{"error":"invalid_grant","error_description":"grant is expired"}',
+                },
+                'imap_new': expired,
+                'imap_old': expired,
+            },
+        }):
+            result = web_outlook_app.fetch_forward_candidates(self.account)
+
+        self.assertTrue(result['token_invalid'])
+        connection = MagicMock(spec=sqlite3.Connection)
+        web_outlook_app.mark_account_token_invalid(connection, self.account['id'], result['error'])
+        update_call = connection.execute.call_args
+        self.assertIn("health_status = 'token_invalid'", update_call.args[0])
+        self.assertEqual(update_call.args[1][1], self.account['id'])
+
+        with patch.object(web_outlook_app, 'fetch_account_folder_emails', return_value={
+            'success': False,
+            'error': {'code': 'GRAPH_TOKEN_EXCEPTION', 'type': 'ConnectionResetError'},
+            'details': {
+                'graph': {'code': 'EMAIL_FETCH_FAILED', 'type': 'ReadTimeout'},
+                'imap_new': {
+                    'code': 'IMAP_TOKEN_FAILED',
+                    'details': 'one or more scopes requested are unauthorized or expired',
+                },
+                'imap_old': {
+                    'code': 'IMAP_TOKEN_FAILED',
+                    'details': 'one or more scopes requested are unauthorized or expired',
+                },
+            },
+        }):
+            network_result = web_outlook_app.fetch_forward_candidates(self.account)
+        self.assertFalse(network_result['token_invalid'])
+
+    def test_auto_protocol_requires_all_token_paths_to_be_expired(self):
+        expired = {
+            'code': 'GRAPH_TOKEN_FAILED',
+            'details': 'grant is expired; user must sign in again',
+        }
+        imap_scope_error = {
+            'code': 'IMAP_TOKEN_FAILED',
+            'details': 'one or more scopes requested are unauthorized or expired',
+        }
+        result = {
+            'details': {
+                'graph': {'code': 'EMAIL_FETCH_FAILED', 'type': 'ReadTimeout'},
+                'imap_new': imap_scope_error,
+                'imap_old': imap_scope_error,
+            }
+        }
+
+        self.assertFalse(web_outlook_app.is_account_token_invalid_result(self.account, result))
+        result['details'] = {
+            'graph': expired,
+            'imap_new': {'code': 'IMAP_TOKEN_FAILED', 'details': 'grant is expired'},
+            'imap_old': {'code': 'IMAP_TOKEN_FAILED', 'details': 'grant is expired'},
+        }
+        self.assertTrue(web_outlook_app.is_account_token_invalid_result(self.account, result))
+
+    def test_list_item_records_imap_old_as_detail_source(self):
+        with patch.object(web_outlook_app, 'get_emails_graph', return_value={
+            'success': False, 'error': 'graph failed'
+        }), patch.object(web_outlook_app, 'get_emails_imap_with_server', side_effect=[
+            {'success': False, 'error': 'new failed'},
+            {'success': True, 'emails': [{'id': '42'}], 'has_more': False},
+        ]):
+            result = web_outlook_app.fetch_account_folder_emails(
+                self.account, 'inbox', 0, 20
+            )
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['method'], 'IMAP (Old)')
+        self.assertEqual(result['emails'][0]['mail_method'], 'imap_old')
+
+    def test_forwarding_query_skips_accounts_marked_token_invalid(self):
+        connection = MagicMock(spec=sqlite3.Connection)
+        connection.execute.return_value.fetchall.return_value = []
+        with patch.object(web_outlook_app, 'connect_database', return_value=connection), \
+                patch.object(web_outlook_app, 'get_forward_channels', return_value=['telegram']), \
+                patch.object(web_outlook_app, 'get_setting_decrypted', return_value='bot-token'), \
+                patch.object(web_outlook_app, 'get_setting', side_effect=lambda key, default='': {
+                    'telegram_chat_id': 'chat-id',
+                    'forward_include_junkemail': 'false',
+                    'forward_email_window_minutes': '0',
+                }.get(key, default)):
+            web_outlook_app.process_forwarding_job()
+
+        account_query = next(
+            call.args[0] for call in connection.execute.call_args_list
+            if 'SELECT * FROM accounts' in call.args[0]
+        )
+        self.assertIn("COALESCE(health_status, '') <> 'token_invalid'", account_query)
+
+    def test_main_account_list_marks_expired_tokens(self):
+        source_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'static', 'js', 'index', '02-groups.js'
+        )
+        with open(source_path, encoding='utf-8') as source_file:
+            source = source_file.read()
+
+        self.assertIn("acc.health_status === 'token_invalid'", source)
+        self.assertIn('Token 过期', source)
 
 
 class PublicApiRemovalTests(unittest.TestCase):

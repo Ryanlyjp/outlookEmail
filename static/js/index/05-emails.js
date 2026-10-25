@@ -53,7 +53,7 @@
 
                 if (data.success) {
                     currentEmails = data.emails;
-                    currentMethod = data.method === 'Graph API' ? 'graph' : 'imap';
+                    currentMethod = data.method === 'Graph API' ? 'graph' : 'imap_new';
                     hasMoreEmails = data.has_more;
 
                     // 保存到缓存
@@ -332,6 +332,7 @@
             const requestFolder = currentFolder === 'all'
                 ? (selectedEmail?.folder || 'inbox')
                 : currentFolder;
+            const detailMethod = selectedEmail?.mail_method || currentMethod;
             // 更新 UI
             document.querySelectorAll('.email-item').forEach((item, i) => {
                 item.classList.toggle('active', i === index);
@@ -356,7 +357,7 @@
             container.innerHTML = '<div class="loading"><div class="loading-spinner"></div></div>';
 
             try {
-                const response = await fetch(`/api/email/${encodeURIComponent(currentAccount)}/${encodeURIComponent(messageId)}?method=${currentMethod}&folder=${requestFolder}`);
+                const response = await fetch(`/api/email/${encodeURIComponent(currentAccount)}/${encodeURIComponent(messageId)}?method=${encodeURIComponent(detailMethod)}&folder=${requestFolder}`);
                 const data = await response.json();
 
                 if (data.success) {

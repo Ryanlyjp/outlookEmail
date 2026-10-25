@@ -624,6 +624,7 @@
                             </span>
                             ${showForwardStatusLabel(!!acc.forward_enabled)}
                             ${acc.status === 'inactive' ? '<span class="account-status-pill muted">已停用</span>' : ''}
+                            ${acc.health_status === 'token_invalid' ? '<span class="account-status-pill danger" title="授权已过期，转发已暂停">Token 过期</span>' : ''}
                             ${acc.last_refresh_status === 'failed' ? '<span class="account-status-pill danger">刷新失败</span>' : ''}
                         </div>
                         ${renderAccountGroupSummary(acc, isSearchMode)}

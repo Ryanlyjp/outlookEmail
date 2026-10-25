@@ -265,6 +265,7 @@ SMTP_FORWARD_PROVIDERS = ('outlook', 'qq', '163', '126', 'yahoo', 'aliyun', 'cus
 
 # 数据库文件
 DATABASE = os.getenv("DATABASE_PATH", str(default_database_path()))
+SQLITE_BUSY_TIMEOUT_MS = 30000
 
 # GPTMail API 配置
 GPTMAIL_BASE_URL = os.getenv("GPTMAIL_BASE_URL", "https://mail.chatgpt.org.uk")
@@ -701,13 +702,24 @@ def get_response_details(response: requests.Response) -> Any:
 
 # ==================== 数据库操作 ====================
 
+def connect_database(*, autocommit: bool = False):
+    """Create a consistently configured SQLite connection."""
+    db = sqlite3.connect(
+        DATABASE,
+        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000,
+        isolation_level=None if autocommit else '',
+    )
+    db.execute('PRAGMA foreign_keys = ON')
+    db.execute(f'PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}')
+    db.row_factory = sqlite3.Row
+    return db
+
+
 def get_db():
     """获取数据库连接"""
     db = getattr(g, '_database', None)
     if db is None:
-        db = g._database = sqlite3.connect(DATABASE)
-        db.execute('PRAGMA foreign_keys = ON')
-        db.row_factory = sqlite3.Row
+        db = g._database = connect_database()
     return db
 
 
@@ -721,8 +733,7 @@ def close_connection(exception):
 
 def init_db():
     """初始化数据库"""
-    conn = sqlite3.connect(DATABASE)
-    conn.execute('PRAGMA foreign_keys = ON')
+    conn = connect_database()
     cursor = conn.cursor()
     
     # 创建设置表

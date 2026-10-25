@@ -562,7 +562,8 @@ def get_emails_imap_with_server(account: str, client_id: str, refresh_token: str
 def get_email_detail_imap(account: str, client_id: str, refresh_token: str, message_id: str,
                           folder: str = 'inbox', proxy_url: str = None,
                           fallback_proxy_urls: Optional[List[str]] = None,
-                          oauth_authority: str = 'consumers') -> Optional[Dict]:
+                          oauth_authority: str = 'consumers',
+                          server: str = IMAP_SERVER_NEW) -> Optional[Dict]:
     """使用 IMAP 获取邮件详情"""
     access_token = get_access_token_imap(client_id, refresh_token, proxy_url, fallback_proxy_urls, oauth_authority)
     if not access_token:
@@ -571,7 +572,7 @@ def get_email_detail_imap(account: str, client_id: str, refresh_token: str, mess
     connection = None
     try:
         with proxy_socket_context(proxy_url):
-            connection = imaplib.IMAP4_SSL(IMAP_SERVER_NEW, IMAP_PORT, timeout=IMAP_TIMEOUT)
+            connection = imaplib.IMAP4_SSL(server, IMAP_PORT, timeout=IMAP_TIMEOUT)
         auth_string = f"user={account}\1auth=Bearer {access_token}\1\1".encode('utf-8')
         connection.authenticate('XOAUTH2', lambda x: auth_string)
 

@@ -449,9 +449,7 @@ def api_refresh_all_accounts():
 
     def generate():
         # 在生成器内部直接创建数据库连接
-        conn = sqlite3.connect(DATABASE)
-        conn.execute('PRAGMA foreign_keys = ON')
-        conn.row_factory = sqlite3.Row
+        conn = connect_database()
 
         try:
             # 获取刷新间隔配置
@@ -655,9 +653,7 @@ def api_trigger_scheduled_refresh():
 
     # 执行刷新（使用流式响应）
     def generate():
-        conn = sqlite3.connect(DATABASE)
-        conn.execute('PRAGMA foreign_keys = ON')
-        conn.row_factory = sqlite3.Row
+        conn = connect_database()
 
         try:
             # 获取刷新间隔配置
@@ -1197,6 +1193,12 @@ def format_email_items(items: List[Dict[str, Any]], folder: str) -> List[Dict[st
     return [normalize_email_list_item(item, folder) for item in items]
 
 
+def set_email_items_source(items: List[Dict[str, Any]], mail_method: str) -> List[Dict[str, Any]]:
+    for item in items:
+        item['mail_method'] = mail_method
+    return items
+
+
 def merge_folder_results(results: Dict[str, Dict[str, Any]], skip: int, top: int) -> Dict[str, Any]:
     successful = {folder: result for folder, result in results.items() if result.get('success')}
     if not successful:
@@ -1264,7 +1266,10 @@ def fetch_account_folder_emails(account: Dict[str, Any], folder: str, skip: int,
         if result.get('success'):
             return {
                 'success': True,
-                'emails': format_email_items(result.get('emails', []), folder_name),
+                'emails': set_email_items_source(
+                    format_email_items(result.get('emails', []), folder_name),
+                    'imap_generic',
+                ),
                 'method': result.get('method', 'IMAP (Generic)'),
                 'has_more': bool(result.get('has_more')),
             }
@@ -1292,7 +1297,10 @@ def fetch_account_folder_emails(account: Dict[str, Any], folder: str, skip: int,
         if graph_result.get('success'):
             return {
                 'success': True,
-                'emails': [format_graph_email_item(item, folder_name) for item in graph_result.get('emails', [])],
+                'emails': set_email_items_source(
+                    [format_graph_email_item(item, folder_name) for item in graph_result.get('emails', [])],
+                    'graph',
+                ),
                 'method': 'Graph API',
                 'has_more': len(graph_result.get('emails', [])) >= top,
             }
@@ -1328,7 +1336,10 @@ def fetch_account_folder_emails(account: Dict[str, Any], folder: str, skip: int,
     if imap_new_result.get('success'):
         return {
             'success': True,
-            'emails': format_email_items(imap_new_result.get('emails', []), folder_name),
+            'emails': set_email_items_source(
+                format_email_items(imap_new_result.get('emails', []), folder_name),
+                'imap_new',
+            ),
             'method': 'IMAP (New)',
             'has_more': bool(imap_new_result.get('has_more')),
         }
@@ -1349,7 +1360,10 @@ def fetch_account_folder_emails(account: Dict[str, Any], folder: str, skip: int,
     if imap_old_result.get('success'):
         return {
             'success': True,
-            'emails': format_email_items(imap_old_result.get('emails', []), folder_name),
+            'emails': set_email_items_source(
+                format_email_items(imap_old_result.get('emails', []), folder_name),
+                'imap_old',
+            ),
             'method': 'IMAP (Old)',
             'has_more': bool(imap_old_result.get('has_more')),
         }
@@ -1510,17 +1524,10 @@ def api_delete_emails():
 
 
 
-@app.route('/api/email/<email_addr>/<path:message_id>')
-@login_required
-def api_get_email_detail(email_addr, message_id):
-    """获取邮件详情"""
-    account = get_account_by_email(email_addr)
-
-    if not account:
-        return jsonify({'success': False, 'error': '账号不存在'})
-
-    method = request.args.get('method', 'graph')
-    folder = normalize_folder_name(request.args.get('folder', 'inbox'))
+def fetch_account_email_detail(account: Dict[str, Any], message_id: str, folder: str,
+                               mail_method: str) -> Optional[Dict[str, Any]]:
+    """Read a message using the protocol that produced its list entry."""
+    folder = normalize_folder_name(folder)
     proxy_url = get_account_proxy_url(account)
     fallback_proxy_urls = get_account_proxy_failover_urls(account)
     mail_protocol = normalize_mail_protocol(account.get('mail_protocol'))
@@ -1538,10 +1545,23 @@ def api_get_email_detail(email_addr, message_id):
             proxy_url
         )
         if detail_result.get('success'):
-            return jsonify(detail_result)
-        return jsonify({'success': False, 'error': detail_result.get('error', '获取邮件详情失败')})
+            return detail_result.get('email')
+        return None
 
-    if mail_protocol != 'imap_oauth' and method == 'graph':
+    normalized_method = str(mail_method or '').strip().lower()
+    if normalized_method in ('graph api', 'graph'):
+        normalized_method = 'graph'
+    elif normalized_method in ('imap (old)', 'imap_old'):
+        normalized_method = 'imap_old'
+    elif normalized_method in ('imap (new)', 'imap_new', 'imap'):
+        normalized_method = 'imap_new'
+
+    if mail_protocol == 'graph':
+        normalized_method = 'graph'
+    elif mail_protocol == 'imap_oauth' and normalized_method == 'graph':
+        normalized_method = 'imap_new'
+
+    if normalized_method == 'graph':
         detail = get_email_detail_graph(
             account['client_id'],
             account['refresh_token'],
@@ -1551,25 +1571,22 @@ def api_get_email_detail(email_addr, message_id):
             oauth_authority,
         )
         if detail:
-            return jsonify({
-                'success': True,
-                'email': {
-                    'id': detail.get('id'),
-                    'subject': detail.get('subject', '无主题'),
-                    'from': detail.get('from', {}).get('emailAddress', {}).get('address', '未知'),
-                    'to': ', '.join([r.get('emailAddress', {}).get('address', '') for r in detail.get('toRecipients', [])]),
-                    'cc': ', '.join([r.get('emailAddress', {}).get('address', '') for r in detail.get('ccRecipients', [])]),
-                    'date': detail.get('receivedDateTime', ''),
-                    'body': detail.get('body', {}).get('content', ''),
-                    'body_type': detail.get('body', {}).get('contentType', 'text')
-                }
-            })
+            return {
+                'id': detail.get('id'),
+                'subject': detail.get('subject', '无主题'),
+                'from': detail.get('from', {}).get('emailAddress', {}).get('address', '未知'),
+                'to': ', '.join([r.get('emailAddress', {}).get('address', '') for r in detail.get('toRecipients', [])]),
+                'cc': ', '.join([r.get('emailAddress', {}).get('address', '') for r in detail.get('ccRecipients', [])]),
+                'date': detail.get('receivedDateTime', ''),
+                'body': detail.get('body', {}).get('content', ''),
+                'body_type': detail.get('body', {}).get('contentType', 'text')
+            }
+        return None
 
-    if mail_protocol == 'graph':
-        return jsonify({'success': False, 'error': 'Graph 获取邮件详情失败'})
+    if normalized_method not in ('imap_new', 'imap_old'):
+        return None
 
-    # auto 或 imap_oauth 使用 OAuth IMAP
-    detail = get_email_detail_imap(
+    return get_email_detail_imap(
         account['email'],
         account['client_id'],
         account['refresh_token'],
@@ -1578,7 +1595,22 @@ def api_get_email_detail(email_addr, message_id):
         proxy_url,
         fallback_proxy_urls,
         oauth_authority,
+        IMAP_SERVER_OLD if normalized_method == 'imap_old' else IMAP_SERVER_NEW,
     )
+
+
+@app.route('/api/email/<email_addr>/<path:message_id>')
+@login_required
+def api_get_email_detail(email_addr, message_id):
+    """获取邮件详情"""
+    account = get_account_by_email(email_addr)
+
+    if not account:
+        return jsonify({'success': False, 'error': '账号不存在'})
+
+    method = request.args.get('method', 'graph')
+    folder = normalize_folder_name(request.args.get('folder', 'inbox'))
+    detail = fetch_account_email_detail(account, message_id, folder, method)
     if detail:
         return jsonify({'success': True, 'email': detail})
 
