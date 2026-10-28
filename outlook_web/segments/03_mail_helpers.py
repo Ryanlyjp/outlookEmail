@@ -1100,10 +1100,10 @@ def parse_email_datetime(value: str) -> Optional[datetime]:
         if raw_value.endswith(')') and ' (' in raw_value:
             raw_value = raw_value[:raw_value.rfind(' (')].strip()
 
-        if 'T' in raw_value:
+        try:
             normalized = raw_value.replace('Z', '+00:00')
             dt = datetime.fromisoformat(normalized)
-        else:
+        except ValueError:
             dt = parsedate_to_datetime(raw_value)
         if dt.tzinfo is not None:
             return dt.astimezone().replace(tzinfo=None)

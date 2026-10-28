@@ -353,7 +353,8 @@ def process_forwarding_job():
                 forward_window_minutes = max(0, min(10080, int(get_setting('forward_email_window_minutes', '0') or '0')))
             except (TypeError, ValueError):
                 forward_window_minutes = 0
-            forward_window_start = datetime.now() - timedelta(minutes=forward_window_minutes) if forward_window_minutes > 0 else None
+            job_started_at = datetime.now()
+            forward_window_start = job_started_at - timedelta(minutes=forward_window_minutes) if forward_window_minutes > 0 else None
             if not email_enabled and not telegram_enabled:
                 print('[forward] skip job: no active channels configured')
                 return
@@ -385,6 +386,17 @@ def process_forwarding_job():
                         pass
 
                 cursor_time = parse_email_datetime(account.get('forward_last_checked_at', ''))
+                if cursor_time is None:
+                    cursor_value = job_started_at.isoformat()
+                    conn.execute(
+                        'UPDATE accounts SET forward_last_checked_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                        (cursor_value, account['id'])
+                    )
+                    conn.commit()
+                    print(
+                        f"[forward] initialized cursor without scanning existing mail: account={account.get('email', '')} cursor={cursor_value}"
+                    )
+                    continue
                 folders_to_scan = ['inbox']
                 if include_junkemail:
                     folders_to_scan.append('junkemail')
@@ -430,7 +442,15 @@ def process_forwarding_job():
                 latest_success_time = cursor_time
                 for item in emails:
                     dt = parse_email_datetime(item.get('date', ''))
-                    if forward_window_start and dt and dt < forward_window_start:
+                    if dt is None:
+                        app.logger.warning(
+                            '[forward] skip email with invalid date: account=%s message_id=%s email_time=%s',
+                            account.get('email', ''),
+                            item.get('id', ''),
+                            item.get('date', ''),
+                        )
+                        continue
+                    if forward_window_start and dt < forward_window_start:
                         app.logger.info(
                             '[forward] skip email older than window: account=%s message_id=%s email_time=%s window_start=%s',
                             account.get('email', ''),
@@ -439,7 +459,7 @@ def process_forwarding_job():
                             forward_window_start.isoformat(),
                         )
                         continue
-                    if cursor_time and dt and dt <= cursor_time:
+                    if dt <= cursor_time:
                         skipped_before_cursor += 1
                         app.logger.info(
                             '[forward] skip email before cursor: account=%s message_id=%s email_time=%s cursor=%s',

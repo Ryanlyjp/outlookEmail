@@ -263,6 +263,132 @@ class DatabaseConcurrencyTests(unittest.TestCase):
         connection.close.assert_called()
 
 
+class ForwardingTimeSafetyTests(unittest.TestCase):
+    def test_parse_rfc_datetime_starting_with_t(self):
+        parsed = web_outlook_app.parse_email_datetime('Thu, 15 Oct 2026 21:27:05 +0000 (UTC)')
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.isoformat(), '2026-10-15T21:27:05')
+
+    def test_old_and_unparseable_email_dates_are_not_forwarded(self):
+        connection = MagicMock(spec=sqlite3.Connection)
+        connection.execute.return_value.fetchall.return_value = [{
+            'id': 7,
+            'email': 'user@outlook.com',
+            'forward_last_checked_at': '2026-10-25T12:48:01Z',
+            'password': '',
+            'refresh_token': '',
+            'imap_password': '',
+        }]
+        candidates = [
+            {
+                'id': 'old-rfc-message',
+                'date': 'Thu, 15 Oct 2026 21:27:05 +0000 (UTC)',
+                'folder': 'inbox',
+                'mail_method': 'imap_new',
+            },
+            {
+                'id': 'invalid-date-message',
+                'date': '未知时间',
+                'folder': 'inbox',
+                'mail_method': 'imap_new',
+            },
+        ]
+
+        with patch.object(web_outlook_app, 'connect_database', return_value=connection), \
+                patch.object(web_outlook_app, 'get_forward_channels', return_value=['telegram']), \
+                patch.object(web_outlook_app, 'get_setting_decrypted', return_value='bot-token'), \
+                patch.object(web_outlook_app, 'get_setting', side_effect=lambda key, default='': {
+                    'telegram_chat_id': 'chat-id',
+                    'forward_email_window_minutes': '0',
+                }.get(key, default)), \
+                patch.object(web_outlook_app, 'get_bool_setting', return_value=False), \
+                patch.object(web_outlook_app, 'fetch_forward_candidates', return_value={
+                    'success': True,
+                    'emails': candidates,
+                }), \
+                patch.object(web_outlook_app, 'fetch_forward_detail') as fetch_detail, \
+                patch.object(web_outlook_app, 'send_forward_telegram') as send_telegram:
+            web_outlook_app.process_forwarding_job()
+
+        fetch_detail.assert_not_called()
+        send_telegram.assert_not_called()
+
+    def test_missing_cursor_is_initialized_without_scanning_existing_mail(self):
+        connection = MagicMock(spec=sqlite3.Connection)
+        connection.execute.return_value.fetchall.return_value = [{
+            'id': 7,
+            'email': 'user@outlook.com',
+            'forward_last_checked_at': None,
+            'password': '',
+            'refresh_token': '',
+            'imap_password': '',
+        }]
+
+        with patch.object(web_outlook_app, 'connect_database', return_value=connection), \
+                patch.object(web_outlook_app, 'get_forward_channels', return_value=['telegram']), \
+                patch.object(web_outlook_app, 'get_setting_decrypted', return_value='bot-token'), \
+                patch.object(web_outlook_app, 'get_setting', side_effect=lambda key, default='': {
+                    'telegram_chat_id': 'chat-id',
+                    'forward_email_window_minutes': '0',
+                }.get(key, default)), \
+                patch.object(web_outlook_app, 'get_bool_setting', return_value=False), \
+                patch.object(web_outlook_app, 'fetch_forward_candidates') as fetch_candidates:
+            web_outlook_app.process_forwarding_job()
+
+        fetch_candidates.assert_not_called()
+        cursor_updates = [
+            call_args for call_args in connection.execute.call_args_list
+            if 'SET forward_last_checked_at = ?' in call_args.args[0]
+        ]
+        self.assertEqual(len(cursor_updates), 1)
+        self.assertEqual(cursor_updates[0].args[1][1], 7)
+
+    def test_email_after_cursor_is_forwarded(self):
+        connection = MagicMock(spec=sqlite3.Connection)
+        connection.execute.return_value.fetchall.return_value = [{
+            'id': 7,
+            'email': 'user@outlook.com',
+            'forward_last_checked_at': '2026-10-25T12:48:01Z',
+            'password': '',
+            'refresh_token': '',
+            'imap_password': '',
+        }]
+        candidate = {
+            'id': 'new-message',
+            'date': '2026-10-25T12:49:01Z',
+            'folder': 'inbox',
+            'mail_method': 'graph',
+        }
+        detail = {
+            'id': 'new-message',
+            'subject': 'New mail',
+            'from': 'sender@example.com',
+            'date': '2026-10-25T12:49:01Z',
+            'body': 'Body',
+            'body_type': 'text',
+        }
+
+        with patch.object(web_outlook_app, 'connect_database', return_value=connection), \
+                patch.object(web_outlook_app, 'get_forward_channels', return_value=['telegram']), \
+                patch.object(web_outlook_app, 'get_setting_decrypted', return_value='bot-token'), \
+                patch.object(web_outlook_app, 'get_setting', side_effect=lambda key, default='': {
+                    'telegram_chat_id': 'chat-id',
+                    'forward_email_window_minutes': '0',
+                }.get(key, default)), \
+                patch.object(web_outlook_app, 'get_bool_setting', return_value=False), \
+                patch.object(web_outlook_app, 'fetch_forward_candidates', return_value={
+                    'success': True,
+                    'emails': [candidate],
+                }), \
+                patch.object(web_outlook_app, 'fetch_forward_detail', return_value=detail), \
+                patch.object(web_outlook_app, 'has_forward_log', return_value=False), \
+                patch.object(web_outlook_app, 'send_forward_telegram', return_value=True) as send_telegram:
+            web_outlook_app.process_forwarding_job()
+
+        send_telegram.assert_called_once()
+
+
 class ForwardingProtocolTests(unittest.TestCase):
     def setUp(self):
         self.account = {
