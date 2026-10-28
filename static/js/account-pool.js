@@ -7,6 +7,7 @@ let sortState = { key: 'id', direction: 'desc' };
 let page = 1;
 let pageSize = 50;
 let csrfToken = null;
+let importedAccountIds = [];
 
 async function initCsrfToken() {
     const response = await fetch('/api/csrf-token');
@@ -153,6 +154,99 @@ async function testSelected() {
     await loadAccounts();
 }
 
+function openImportModal() {
+    $('#accountPoolImportModal').classList.remove('hidden');
+    $('#importAccountText').focus();
+}
+
+function closeImportModal() {
+    $('#accountPoolImportModal').classList.add('hidden');
+}
+
+async function importAccounts() {
+    const accountString = $('#importAccountText').value.trim();
+    if (!accountString) return toast('请输入账号信息');
+    const submitButton = $('#submitImportBtn');
+    submitButton.disabled = true;
+    try {
+        const data = await api('/api/account-pool/import', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({account_string: accountString}),
+        });
+        importedAccountIds = data.account_ids || [];
+        const testButton = $('#testImportedBtn');
+        testButton.disabled = importedAccountIds.length === 0;
+        testButton.textContent = `测试本次导入 (${importedAccountIds.length})`;
+        closeImportModal();
+        $('#jobTitle').textContent = '批量导入';
+        $('#jobState').textContent = `共 ${importedAccountIds.length} 个账号`;
+        $('#jobBar').style.width = '100%';
+        const invalidText = data.invalid_line_numbers?.length ? `，格式错误行 ${data.invalid_line_numbers.join('、')}` : '';
+        $('#jobText').textContent = `新增 ${data.created_count}，替换 ${data.updated_count}${invalidText}`;
+        $('#jobCard').classList.remove('hidden');
+        toast(data.message || '导入完成');
+        await loadAccounts();
+    } finally {
+        submitButton.disabled = false;
+    }
+}
+
+async function readEventStream(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+        const {value, done} = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), {stream: !done});
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+            const block = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const dataLine = block.split('\n').find(line => line.startsWith('data: '));
+            if (dataLine) onEvent(JSON.parse(dataLine.slice(6)));
+            boundary = buffer.indexOf('\n\n');
+        }
+        if (done) break;
+    }
+}
+
+async function testImportedAccounts() {
+    if (!importedAccountIds.length) return toast('请先导入账号');
+    const button = $('#testImportedBtn');
+    button.disabled = true;
+    showJob('测试本次导入');
+    try {
+        const response = await fetch('/api/accounts/refresh-imported', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', ...(csrfToken ? {'X-CSRFToken': csrfToken} : {})},
+            body: JSON.stringify({account_ids: importedAccountIds}),
+        });
+        if (response.status === 401) {
+            location.href = '/login';
+            return;
+        }
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || '测试请求失败');
+        }
+        await readEventStream(response, data => {
+            if (data.type === 'start') {
+                $('#jobState').textContent = `共 ${data.total} 个账号 · 并发 3`;
+            } else if (data.type === 'progress') {
+                $('#jobBar').style.width = `${Math.round(data.current / Math.max(data.total, 1) * 100)}%`;
+                $('#jobText').textContent = `${data.current}/${data.total} · ${data.email} · 成功 ${data.success_count} · 失败 ${data.failed_count}`;
+            } else if (data.type === 'complete') {
+                $('#jobBar').style.width = '100%';
+                $('#jobText').textContent = `完成：成功 ${data.success_count}，失败 ${data.failed_count}，跳过 ${data.skipped_count}`;
+            }
+        });
+        await loadAccounts();
+    } finally {
+        button.disabled = false;
+    }
+}
+
 function showJob(title) {
     $('#jobTitle').textContent = title; $('#jobState').textContent = ''; $('#jobText').textContent = '正在初始化…'; $('#jobBar').style.width = '0%'; $('#jobCard').classList.remove('hidden');
 }
@@ -199,6 +293,14 @@ document.addEventListener('DOMContentLoaded', () => {
     $$('#poolStats button').forEach(button => button.addEventListener('click', () => { $('#healthFilter').value = button.dataset.filter; page = 1; render(); }));
     $$('th[data-sort]').forEach(th => th.addEventListener('click', () => { const key=th.dataset.sort; sortState={key,direction:sortState.key===key&&sortState.direction==='asc'?'desc':'asc'}; render(); }));
     $('#reloadBtn').onclick = () => loadAccounts().catch(error => toast(error.message));
+    $('#importAccountsBtn').onclick = openImportModal;
+    $('#closeImportModalBtn').onclick = closeImportModal;
+    $('#cancelImportBtn').onclick = closeImportModal;
+    $('#submitImportBtn').onclick = () => importAccounts().catch(error => toast(error.message));
+    $('#testImportedBtn').onclick = () => testImportedAccounts().catch(error => toast(error.message));
+    $('#accountPoolImportModal').addEventListener('click', event => {
+        if (event.target.id === 'accountPoolImportModal') closeImportModal();
+    });
     $('#selectFilteredBtn').onclick = () => { filteredAccounts().forEach(a => selected.add(a.id)); render(); };
     $('#clearSelectedBtn').onclick = () => { selected.clear(); render(); };
     $('#testSelectedBtn').onclick = () => testSelected().catch(error => toast(error.message));

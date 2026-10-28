@@ -678,6 +678,165 @@ class BatchForwardingApiTests(unittest.TestCase):
         self.assertEqual(enabled_account['forward_last_checked_at'], self.enabled_cursor_before)
 
 
+class AccountPoolImportTests(unittest.TestCase):
+    def setUp(self):
+        self.app = web_outlook_app.app
+        self.app.config['TESTING'] = True
+        self.app.config['WTF_CSRF_ENABLED'] = False
+        self.client = self.app.test_client()
+        with self.client.session_transaction() as session:
+            session['logged_in'] = True
+
+        with self.app.app_context():
+            db = web_outlook_app.get_db()
+            db.execute('DELETE FROM account_tags')
+            db.execute('DELETE FROM account_aliases')
+            db.execute('DELETE FROM account_refresh_logs')
+            db.execute('DELETE FROM accounts')
+            db.execute('DELETE FROM tags')
+            db.execute("DELETE FROM groups WHERE name NOT IN ('默认分组', '临时邮箱')")
+            db.commit()
+
+    def test_pool_import_replaces_credentials_and_preserves_account_settings(self):
+        with self.app.app_context():
+            group_id = web_outlook_app.add_group('保留分组', '保留原分组', '#225588')
+            self.assertTrue(web_outlook_app.add_account(
+                'existing@outlook.com',
+                'old-password',
+                'old-client-id',
+                'old-refresh-token',
+                group_id=group_id,
+                remark='保留备注',
+                forward_enabled=True,
+                mail_protocol='graph',
+                oauth_authority='consumers',
+            ))
+            existing = web_outlook_app.get_account_by_email('existing@outlook.com')
+            tag_id = web_outlook_app.add_tag('保留标签', '#123456')
+            self.assertTrue(web_outlook_app.add_account_tag(existing['id'], tag_id))
+            db = web_outlook_app.get_db()
+            db.execute(
+                "UPDATE accounts SET health_status = 'token_invalid', status = 'inactive' WHERE id = ?",
+                (existing['id'],),
+            )
+            db.commit()
+
+        response = self.client.post('/api/account-pool/import', json={
+            'account_string': '\n'.join([
+                'EXISTING@outlook.com----new-password----new-client-id----new-refresh-token',
+                'new@outlook.com----new-account-password----new-account-client----new-account-token',
+                'invalid-line',
+            ]),
+        })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['created_count'], 1)
+        self.assertEqual(payload['updated_count'], 1)
+        self.assertEqual(payload['invalid_line_numbers'], [3])
+        self.assertEqual(len(payload['account_ids']), 2)
+
+        with self.app.app_context():
+            existing_after = web_outlook_app.get_account_by_email('existing@outlook.com')
+            new_account = web_outlook_app.get_account_by_email('new@outlook.com')
+            default_group = web_outlook_app.get_db().execute(
+                "SELECT id FROM groups WHERE name = '默认分组'"
+            ).fetchone()
+
+            self.assertEqual(existing_after['password'], 'new-password')
+            self.assertEqual(existing_after['client_id'], 'new-client-id')
+            self.assertEqual(existing_after['refresh_token'], 'new-refresh-token')
+            self.assertEqual(existing_after['group_id'], group_id)
+            self.assertEqual(existing_after['remark'], '保留备注')
+            self.assertTrue(existing_after['forward_enabled'])
+            self.assertEqual(existing_after['mail_protocol'], 'graph')
+            self.assertEqual(existing_after['oauth_authority'], 'consumers')
+            self.assertEqual(existing_after['health_status'], 'token_invalid')
+            self.assertEqual(existing_after['status'], 'inactive')
+            self.assertEqual(
+                [tag['name'] for tag in web_outlook_app.get_account_tags(existing_after['id'])],
+                ['保留标签'],
+            )
+            self.assertEqual(new_account['group_id'], default_group['id'])
+            self.assertFalse(new_account['forward_enabled'])
+
+    def test_imported_account_test_uses_three_workers_and_persists_results(self):
+        account_ids = []
+        with self.app.app_context():
+            for index in range(6):
+                self.assertTrue(web_outlook_app.add_account(
+                    f'imported-{index}@outlook.com',
+                    'password',
+                    f'client-{index}',
+                    f'token-{index}',
+                ))
+                account_ids.append(web_outlook_app.get_account_by_email(
+                    f'imported-{index}@outlook.com'
+                )['id'])
+            placeholders = ','.join('?' * len(account_ids))
+            web_outlook_app.get_db().execute(
+                f"UPDATE accounts SET health_status = 'token_invalid', status = 'inactive' "
+                f"WHERE id IN ({placeholders})",
+                account_ids,
+            )
+            web_outlook_app.get_db().commit()
+
+        active_workers = 0
+        max_workers = 0
+        worker_lock = threading.Lock()
+
+        def fake_probe(*_args, **_kwargs):
+            nonlocal active_workers, max_workers
+            with worker_lock:
+                active_workers += 1
+                max_workers = max(max_workers, active_workers)
+            threading.Event().wait(0.05)
+            with worker_lock:
+                active_workers -= 1
+            return {
+                'success': True,
+                'health_status': 'all',
+                'graph_status': 'ok',
+                'imap_status': 'ok',
+                'permission_scopes': {'graph': 'Mail.Read', 'imap': 'IMAP.AccessAsUser.All'},
+                'error': '',
+            }
+
+        with patch.object(web_outlook_app, 'probe_account_permissions', side_effect=fake_probe):
+            response = self.client.post('/api/accounts/refresh-imported', json={
+                'account_ids': account_ids,
+            })
+            body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'text/event-stream')
+        self.assertEqual(max_workers, 3)
+        self.assertIn('"type": "complete"', body)
+        self.assertIn('"success_count": 6', body)
+        self.assertIn('"failed_count": 0', body)
+
+        with self.app.app_context():
+            placeholders = ','.join('?' * len(account_ids))
+            accounts = web_outlook_app.get_db().execute(
+                f'SELECT status, health_status, graph_status, imap_status '
+                f'FROM accounts WHERE id IN ({placeholders})',
+                account_ids,
+            ).fetchall()
+            logs = web_outlook_app.get_db().execute(
+                f"SELECT status FROM account_refresh_logs WHERE account_id IN ({placeholders})",
+                account_ids,
+            ).fetchall()
+
+        self.assertEqual(len(accounts), 6)
+        self.assertTrue(all(account['status'] == 'active' for account in accounts))
+        self.assertTrue(all(account['health_status'] == 'all' for account in accounts))
+        self.assertTrue(all(account['graph_status'] == 'ok' for account in accounts))
+        self.assertTrue(all(account['imap_status'] == 'ok' for account in accounts))
+        self.assertEqual(len(logs), 6)
+        self.assertTrue(all(log['status'] == 'success' for log in logs))
+
+
 class AssetRenderingTests(unittest.TestCase):
     def setUp(self):
         self.app = web_outlook_app.app
@@ -734,11 +893,16 @@ class AssetRenderingTests(unittest.TestCase):
         self.assertIn('id="domainFilter"', html)
         self.assertIn('id="testAllBtn"', html)
         self.assertIn('id="retryFailedBtn"', html)
+        self.assertIn('id="importAccountsBtn"', html)
+        self.assertIn('id="testImportedBtn"', html)
+        self.assertIn('id="accountPoolImportModal"', html)
         self.assertNotIn('id="refreshModal"', html)
         self.assertNotIn('Token刷新管理', html)
         self.assertIn('/static/js/account-pool.js', html)
         self.assertIn('/api/accounts/${id}/refresh', script)
         self.assertIn('/api/accounts/refresh-selected', script)
+        self.assertIn('/api/account-pool/import', script)
+        self.assertIn('/api/accounts/refresh-imported', script)
         self.assertIn("fetch('/api/csrf-token')", script)
         self.assertIn("'X-CSRFToken': csrfToken", script)
         self.assertIn("${a.email || ''}----${a.password || ''}", script)

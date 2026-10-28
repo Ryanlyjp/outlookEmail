@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any, Dict, List
 
 if TYPE_CHECKING:
@@ -438,6 +438,94 @@ def api_refresh_selected_accounts():
         'failed_list': failed_list,
         'skipped_list': skipped_list,
     })
+
+
+def refresh_imported_account_worker(account: Dict[str, Any]) -> Dict[str, Any]:
+    with app.app_context():
+        result = refresh_outlook_account_token(account, 'manual')
+    return {
+        'id': account['id'],
+        'email': account['email'],
+        'success': bool(result.get('success')),
+        'error': result.get('error_message') or '',
+    }
+
+
+@app.route('/api/accounts/refresh-imported', methods=['POST'])
+@login_required
+def api_refresh_imported_accounts():
+    data = request.get_json(silent=True) or {}
+    account_ids = normalize_account_ids(data.get('account_ids') or [])
+    if not account_ids:
+        return jsonify({'success': False, 'error': '没有可测试的导入账号'}), 400
+
+    db = get_db()
+    placeholders = ','.join('?' * len(account_ids))
+    rows = db.execute(
+        f'''
+        SELECT id, email, client_id, refresh_token, group_id, account_type, provider,
+               mail_protocol, oauth_authority
+        FROM accounts
+        WHERE id IN ({placeholders})
+        ORDER BY email COLLATE NOCASE ASC
+        ''',
+        account_ids,
+    ).fetchall()
+    accounts = [dict(row) for row in rows if (row['account_type'] or 'outlook') == 'outlook']
+    found_ids = {account['id'] for account in accounts}
+    skipped_count = len(account_ids) - len(found_ids)
+
+    def generate():
+        total = len(account_ids)
+        success_count = 0
+        failed_count = 0
+        current = skipped_count
+        yield f"data: {json.dumps({'type': 'start', 'total': total, 'skipped_count': skipped_count}, ensure_ascii=False)}\n\n"
+
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix='imported-account-test') as executor:
+            future_map = {
+                executor.submit(refresh_imported_account_worker, account): account
+                for account in accounts
+            }
+            for future in as_completed(future_map):
+                account = future_map[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    result = {
+                        'id': account['id'],
+                        'email': account['email'],
+                        'success': False,
+                        'error': sanitize_error_details(str(exc)) or '测试失败',
+                    }
+                current += 1
+                if result['success']:
+                    success_count += 1
+                else:
+                    failed_count += 1
+                progress = {
+                    'type': 'progress',
+                    'current': current,
+                    'total': total,
+                    'email': result['email'],
+                    'success': result['success'],
+                    'error': result['error'],
+                    'success_count': success_count,
+                    'failed_count': failed_count,
+                    'skipped_count': skipped_count,
+                }
+                yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+
+        complete = {
+            'type': 'complete',
+            'total': total,
+            'success_count': success_count,
+            'failed_count': failed_count,
+            'skipped_count': skipped_count,
+        }
+        yield f"data: {json.dumps(complete, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream')
 
 
 @app.route('/api/accounts/refresh-all', methods=['GET'])

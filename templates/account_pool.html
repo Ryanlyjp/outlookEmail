@@ -21,7 +21,11 @@
         <main>
             <header class="page-head">
                 <div><h1>账号池</h1><p>账号库存、访问能力与资料复制集中管理。</p></div>
-                <a class="btn secondary" href="/">返回邮件管理</a>
+                <div class="head-actions">
+                    <button class="btn success" id="importAccountsBtn">批量导入</button>
+                    <button class="btn secondary" id="testImportedBtn" disabled>测试本次导入</button>
+                    <a class="btn secondary" href="/">返回邮件管理</a>
+                </div>
             </header>
 
             <section class="stats-grid" id="poolStats">
@@ -69,6 +73,20 @@
                 <footer class="table-footer"><span id="tableSummary"></span><label>每页 <select id="pageSize"><option>20</option><option selected>50</option><option>100</option><option>200</option></select></label><button class="btn ghost" id="prevPage">上一页</button><span id="pageInfo">1 / 1</span><button class="btn ghost" id="nextPage">下一页</button></footer>
             </section>
         </main>
+    </div>
+    <div class="modal hidden" id="accountPoolImportModal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+        <div class="modal-dialog">
+            <div class="modal-head">
+                <h2 id="importModalTitle">批量导入账号</h2>
+                <button class="modal-close" id="closeImportModalBtn" type="button" aria-label="关闭">×</button>
+            </div>
+            <label for="importAccountText">账号信息</label>
+            <textarea id="importAccountText" rows="12" placeholder="邮箱----密码----client----RT"></textarea>
+            <div class="modal-actions">
+                <button class="btn ghost" id="cancelImportBtn" type="button">取消</button>
+                <button class="btn success" id="submitImportBtn" type="button">导入</button>
+            </div>
+        </div>
     </div>
     <div class="toast hidden" id="toast"></div>
     <script src="{{ url_for('static', filename='js/account-pool.js') }}"></script>

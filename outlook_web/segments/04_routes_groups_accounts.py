@@ -914,6 +914,20 @@ def api_add_account():
         return jsonify({'success': False, 'error': '没有新账号被添加（可能格式错误或已存在）'})
 
 
+@app.route('/api/account-pool/import', methods=['POST'])
+@login_required
+def api_import_account_pool_accounts():
+    data = request.get_json(silent=True) or {}
+    result = import_outlook_accounts_to_pool(data.get('account_string', ''))
+    if not result.get('success'):
+        return jsonify(result), 400
+
+    result['message'] = (
+        f"导入完成：新增 {result['created_count']} 个，替换 {result['updated_count']} 个"
+    )
+    return jsonify(result)
+
+
 @app.route('/api/accounts/<int:account_id>', methods=['PUT'])
 @login_required
 def api_update_account(account_id):

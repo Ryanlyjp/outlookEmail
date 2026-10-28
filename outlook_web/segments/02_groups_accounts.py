@@ -623,6 +623,112 @@ def add_account(email_addr: str, password: str, client_id: str = '', refresh_tok
         return False
 
 
+def import_outlook_accounts_to_pool(import_text: str) -> Dict[str, Any]:
+    """Create or replace Outlook credentials while preserving existing account settings."""
+    entries = []
+    entry_indexes = {}
+    invalid_line_numbers = []
+    for line_number, raw_line in enumerate(str(import_text or '').splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        parsed = parse_outlook_account_string(line, 'client_id_refresh_token')
+        if not parsed:
+            invalid_line_numbers.append(line_number)
+            continue
+        email_key = parsed['email'].strip().lower()
+        if email_key in entry_indexes:
+            entries[entry_indexes[email_key]] = parsed
+        else:
+            entry_indexes[email_key] = len(entries)
+            entries.append(parsed)
+
+    if not entries:
+        return {
+            'success': False,
+            'error': '没有可导入的有效账号',
+            'invalid_line_numbers': invalid_line_numbers,
+        }
+
+    db = get_db()
+    default_group = db.execute(
+        "SELECT id FROM groups WHERE name = '默认分组' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not default_group:
+        return {'success': False, 'error': '默认分组不存在'}
+
+    created_count = 0
+    updated_count = 0
+    account_ids = []
+    try:
+        for parsed in entries:
+            email_addr = parsed['email'].strip()
+            existing = db.execute(
+                'SELECT id FROM accounts WHERE LOWER(email) = LOWER(?) LIMIT 1',
+                (email_addr,),
+            ).fetchone()
+            encrypted_password = encrypt_data(parsed.get('password', '')) if parsed.get('password') else ''
+            encrypted_refresh_token = encrypt_data(parsed['refresh_token'])
+
+            if existing:
+                account_id = existing['id']
+                db.execute(
+                    '''
+                    UPDATE accounts
+                    SET password = ?, client_id = ?, refresh_token = ?,
+                        account_type = 'outlook', provider = 'outlook',
+                        imap_host = ?, imap_port = ?, imap_password = '',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    ''',
+                    (
+                        encrypted_password,
+                        parsed['client_id'],
+                        encrypted_refresh_token,
+                        IMAP_SERVER_NEW,
+                        IMAP_PORT,
+                        account_id,
+                    ),
+                )
+                updated_count += 1
+            else:
+                cursor = db.execute(
+                    '''
+                    INSERT INTO accounts (
+                        email, password, client_id, refresh_token, group_id, remark,
+                        account_type, provider, imap_host, imap_port, imap_password,
+                        forward_enabled, forward_last_checked_at, mail_protocol, oauth_authority
+                    )
+                    VALUES (?, ?, ?, ?, ?, '', 'outlook', 'outlook', ?, ?, '', 0, NULL, 'auto', 'common')
+                    ''',
+                    (
+                        email_addr,
+                        encrypted_password,
+                        parsed['client_id'],
+                        encrypted_refresh_token,
+                        default_group['id'],
+                        IMAP_SERVER_NEW,
+                        IMAP_PORT,
+                    ),
+                )
+                account_id = cursor.lastrowid
+                created_count += 1
+            account_ids.append(account_id)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        return {'success': False, 'error': '导入失败，未保存任何账号'}
+
+    return {
+        'success': True,
+        'created_count': created_count,
+        'updated_count': updated_count,
+        'invalid_line_numbers': invalid_line_numbers,
+        'account_ids': account_ids,
+    }
+
+
 def update_account(account_id: int, email_addr: str, password: str, client_id: str,
                    refresh_token: str, group_id: int, remark: str, status: str,
                    account_type: str = 'outlook', provider: str = 'outlook',
